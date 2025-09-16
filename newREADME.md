@@ -1,42 +1,70 @@
 # Upgrade in Airgapped Environment
 
+Upgrading OpenShift in a **disconnected (airgapped)** environment requires additional steps compared to a connected cluster.  
+Because the cluster cannot reach Red Hat’s public update services, you must provide your own **OpenShift Update Service (OSUS)** and configure it to trust your **internal registries** and **certificates**.
+
+This document walks through the steps needed to set up OSUS and perform upgrades.
+
+---
+
 ## Pre-requisites
-- Update the operators first.
-- Install the **cincinnati-operator**.
-- Update the `oc` CLI command tool to the latest version.
+- Update the operators to the latest versions.
+- Install the **cincinnati-operator** (this operator powers OSUS).
+- Update the `oc` CLI to the latest version.
 
-**Reference:** [Disconnected Environment Updates - Red Hat Documentation](https://docs.redhat.com/en/documentation/openshift_container_platform/4.18/html/disconnected_environments/updating-a-cluster-in-a-disconnected-environment#updating-disconnected-cluster-osus)
+**Why:**  
+Operators must be upgraded first to ensure they are compatible with the target OpenShift version.  
+The Cincinnati operator provides the graph data and policies required for controlled upgrades.  
+The CLI tool must be up to date so it understands new cluster APIs and commands.
 
-To achieve an update experience similar to connected clusters, follow the steps below to install and configure the OpenShift Update Service (OSUS) in a disconnected environment.
+**Reference:**  
+[Disconnected Environment Updates - Red Hat Docs](https://docs.redhat.com/en/documentation/openshift_container_platform/4.18/html/disconnected_environments/updating-a-cluster-in-a-disconnected-environment#updating-disconnected-cluster-osus)
 
 ---
 
 ## Workflow Overview
-1. Configure access to a secured registry.
-2. Update the global cluster pull secret to access your mirror registry.
-3. Install the OSUS Operator.
-4. Create a graph data container image for the OpenShift Update Service.
-5. Install the OSUS application and configure your clusters to use the OSUS instance.
-6. Perform a supported update procedure as you would in a connected cluster.
+The high-level process:
+
+1. **Configure registry access** – so the cluster can pull mirrored images.
+2. **Update global pull secret** – to authenticate against your mirror registry.
+3. **Install OSUS Operator** – deploys update services in disconnected clusters.
+4. **Create OSUS graph image** – generates upgrade paths from mirrored release metadata.
+5. **Deploy OSUS application** – provides a local “over-the-air” update service.
+6. **Configure the CVO** – point your cluster at the local OSUS service.
+7. **Perform upgrades** – now the disconnected cluster behaves like a connected one.
 
 ---
 
-## Step 1: Install Cincinnati Operator
-- **Doc Reference:** [3.5.8 Configuring oc-mirror Resources](https://docs.redhat.com/en/documentation/openshift_container_platform/4.18/html-single/disconnected_environments/index#updating-a-cluster-in-a-disconnected-environment:~:text=3.5.8.%C2%A0Configuring%20your%20cluster%20to%20use%20the%20resources%20generated%20by%20oc%2Dmirror)
+## Step 1: Install the Cincinnati Operator
+The **Cincinnati operator** is responsible for serving upgrade graph information.  
+Without it, the Cluster Version Operator (CVO) cannot determine valid upgrade paths.
+
+**What to do:**
+- Deploy the Cincinnati operator.
+- Apply mirrored release image signatures (if you mirrored release payloads).  
 
 ```bash
 oc apply -f ./oc-mirror-workspace/results-1639608409/release-signatures/
 ````
 
+**Why:**
+Release signatures prove the authenticity of mirrored release images.
+If not applied, the CVO will refuse upgrades because it cannot verify payload integrity.
+
+**Reference:**
+[3.5.8 Configuring oc-mirror Resources](https://docs.redhat.com/en/documentation/openshift_container_platform/4.18/html-single/disconnected_environments/index#updating-a-cluster-in-a-disconnected-environment:~:text=3.5.8.%C2%A0Configuring%20your%20cluster%20to%20use%20the%20resources%20generated%20by%20oc%2Dmirror)
+
 ---
 
 ## Step 2: Configure Access to a Secured Registry
 
-**References:**
+Disconnected clusters rely on your **internal registry mirror**.
+The cluster must trust the registry’s TLS certificates before it can pull images.
 
-* [OSUS Secured Registry Config (v4.15)](https://docs.openshift.com/container-platform/4.15/updating/updating_a_cluster/updating_disconnected_cluster/disconnected-update-osus.html)
-* [OSUS Secured Registry Config (v4.17)](https://docs.openshift.com/container-platform/4.17/disconnected/updating/disconnected-update-osus.html#updating-disconnected-cluster-osus)
-* [OSUS Secured Registry Config (v4.18)](https://docs.redhat.com/en/documentation/openshift_container_platform/4.18/html/disconnected_environments/updating-a-cluster-in-a-disconnected-environment#registry-configuration-for-update-service_updating-disconnected-cluster-osus)
+**What to do:**
+
+* Create a ConfigMap containing your registry’s CA certificate(s).
+* Reference this ConfigMap in the cluster-wide `Image` configuration.
 
 ```yaml
 apiVersion: v1
@@ -62,7 +90,7 @@ oc create configmap my-registry-ca \
   -n openshift-config
 ```
 
-Update the cluster image configuration:
+Patch the cluster config:
 
 ```yaml
 spec:
@@ -70,32 +98,54 @@ spec:
     name: registry-config
 ```
 
+**Why:**
+If the cluster does not trust your registry’s certificate, all image pulls will fail with TLS errors such as
+`x509: certificate signed by unknown authority`.
+
 ---
 
-## Step 3: Add Router CA to User CA Bundle
+## Step 3: Add Router CA to the User CA Bundle
 
-**Reference:** [Adding Ingress Router CA](https://docs.redhat.com/en/documentation/openshift_container_platform/4.18/html/disconnected_environments/updating-a-cluster-in-a-disconnected-environment#update-service-create-service_updating-disconnected-cluster-osus)
+The CVO must contact the **OSUS service endpoint** through your cluster’s ingress router.
+By default, the router issues its own self-signed CA, which is not trusted by the CVO.
 
-```bash
-oc get secret -n openshift-ingress-operator router-ca -o yaml
-```
+**What to do:**
 
-Extract the CA cert and add it to the `user-ca-bundle`.
-This ensures CVO can communicate with the ingress router.
+* Extract the router CA certificate:
+
+  ```bash
+  oc get secret -n openshift-ingress-operator router-ca -o yaml
+  ```
+* Add the certificate to the cluster’s `user-ca-bundle`.
+
+**Why:**
+If the ingress CA is not trusted, the CVO cannot talk to the OSUS service.
+This results in errors like:
+`CVO is showing x509: certificate is signed by unknown authority`.
+
+**Reference:**
+[Adding Ingress Router CA](https://docs.redhat.com/en/documentation/openshift_container_platform/4.18/html/disconnected_environments/updating-a-cluster-in-a-disconnected-environment#update-service-create-service_updating-disconnected-cluster-osus)
 
 ---
 
 ## Step 4: Create an OSUS Application
 
-Use the `updateservice.yaml` file generated by **oc-mirror**.
+Deploy the OSUS service using the `updateservice.yaml` generated by **oc-mirror**.
 
-**Reference:** [Create OSUS Application](https://docs.redhat.com/en/documentation/openshift_container_platform/4.18/html/disconnected_environments/updating-a-cluster-in-a-disconnected-environment#update-service-create-service_updating-disconnected-cluster-osus)
+**Why:**
+This application serves the **upgrade graph** that the CVO consumes.
+It replicates the “Over-the-Air Updates” experience but inside your disconnected environment.
+
+**Reference:**
+[Create OSUS Application](https://docs.redhat.com/en/documentation/openshift_container_platform/4.18/html/disconnected_environments/updating-a-cluster-in-a-disconnected-environment#update-service-create-service_updating-disconnected-cluster-osus)
 
 ---
 
 ## Step 5: Configure the Cluster Version Operator (CVO)
 
-**Reference:** [Configure CVO](https://docs.redhat.com/en/documentation/openshift_container_platform/4.18/html/disconnected_environments/updating-a-cluster-in-a-disconnected-environment#update-service-configure-cvo)
+The CVO needs to be pointed at your local OSUS service instead of Red Hat’s public one.
+
+**What to do:**
 
 ```bash
 NAMESPACE=openshift-update-service
@@ -107,60 +157,79 @@ PATCH="{\"spec\":{\"upstream\":\"${POLICY_ENGINE_GRAPH_URI}\"}}"
 oc patch clusterversion version -p $PATCH --type merge
 ```
 
+**Why:**
+By default, the CVO looks at `api.openshift.com` for updates.
+In a disconnected cluster, this will fail.
+This patch redirects the CVO to your local OSUS.
+
 ---
 
 ## Step 6: Upgrade Other Clusters Using OSUS
 
-* Retrieve the route for the OSUS service:
+Once OSUS is working, you can point other disconnected clusters to the same service.
 
-```bash
-POLICY_ENGINE_GRAPH_URI="$(oc -n openshift-update-service get updateservice <update-service-name> -o jsonpath='{.status.policyEngineURI}/api/upgrades_info/v1/graph')"
-echo $POLICY_ENGINE_GRAPH_URI
-```
+**Steps:**
 
-* Configure each cluster to use this service:
+1. Retrieve the OSUS route:
 
-```bash
-PATCH="{\"spec\":{\"upstream\":\"${POLICY_ENGINE_GRAPH_URI}\"}}"
-oc patch clusterversion version -p $PATCH --type merge
-```
+   ```bash
+   POLICY_ENGINE_GRAPH_URI="$(oc -n openshift-update-service get updateservice <update-service-name> -o jsonpath='{.status.policyEngineURI}/api/upgrades_info/v1/graph')"
+   echo $POLICY_ENGINE_GRAPH_URI
+   ```
 
-* If updates stall, force them:
+2. Patch each cluster:
 
-```bash
-oc patch clusterversion version --type json -p '[{"op": "add", "path": "/spec/desiredUpdate/force", "value": true}]'
-```
+   ```bash
+   PATCH="{\"spec\":{\"upstream\":\"${POLICY_ENGINE_GRAPH_URI}\"}}"
+   oc patch clusterversion version -p $PATCH --type merge
+   ```
+
+3. If upgrades stall due to missing signatures, force them:
+
+   ```bash
+   oc patch clusterversion version --type json -p '[{"op": "add", "path": "/spec/desiredUpdate/force", "value": true}]'
+   ```
+
+**Why:**
+This enables you to run a **centralized update service** for multiple clusters, instead of replicating OSUS everywhere.
 
 ---
 
 ## Troubleshooting & Errors
 
-### Example: Payload Verification Failure
+### Payload Verification Failure
 
 ```
-Retrieving payload failed version="4.15.24"
 The update cannot be verified: unable to verify sha256...
 ```
 
-### Example: Certificate Errors
+**Cause:** Release signatures missing or not trusted.
+**Fix:** Apply mirrored `release-signatures` again.
+
+---
+
+### Certificate Errors
 
 ```
 tls: failed to verify certificate: x509: certificate signed by unknown authority
 ```
 
-* Ensure that the registry and OSUS CA certificates are correctly configured in `additionalTrustedCA`.
+**Cause:** Missing CA configuration.
+**Fix:** Ensure registry and ingress CA certificates are in `additionalTrustedCA`.
 
 ---
 
 ## Testing Multi-Registry Upgrade
 
-Check `ImageDigestMirrorSet` configuration:
+Sometimes clusters need to pull payloads from **multiple mirrored registries**.
+
+Check your `ImageDigestMirrorSet`:
 
 ```bash
 oc get idms image-digest-mirror -o yaml
 ```
 
-Example YAML:
+**Example:**
 
 ```yaml
 apiVersion: config.openshift.io/v1
@@ -179,13 +248,20 @@ spec:
     source: quay.io/openshift-release-dev/ocp-release
 ```
 
+**Why:**
+This allows flexibility when multiple registry namespaces or versions are mirrored.
+
 ---
 
 ## References
 
 * [Disconnected Environments - Red Hat Docs](https://docs.redhat.com/en/documentation/openshift_container_platform/4.18/html/disconnected_environments/)
 * [Configuring Registry Access](https://docs.redhat.com/en/documentation/openshift_container_platform/4.18/html/disconnected_environments/updating-a-cluster-in-a-disconnected-environment#registry-configuration-for-update-service_updating-disconnected-cluster-osus)
-* [OpenShift Update Service Medium Article](https://medium.com/@hillayamir/openshift-update-service-your-personal-over-the-air-update-service-776b43230011)
+* [OpenShift Update Service - Medium Guide](https://medium.com/@hillayamir/openshift-update-service-your-personal-over-the-air-update-service-776b43230011)
 
 ```
 
+---
+
+Would you like me to also create a **diagram (in Mermaid or ASCII)** showing the OSUS architecture (registry, update service, CVO, and cluster flow)? That could help visualize the process.
+```
