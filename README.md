@@ -1,186 +1,385 @@
-Step to upgrade in airgapped
------------------------------
-DND Doc need update:
-- Update the operators first
-- Install the cincinnati-operator
-- Update the oc cli command tool to the latest version
-~~~
-REF: https://docs.redhat.com/en/documentation/openshift_container_platform/4.18/html/disconnected_environments/updating-a-cluster-in-a-disconnected-environment#updating-disconnected-cluster-osus
+# Upgrade in Airgapped Environment
 
-To get an update experience similar to connected clusters, you can use the following procedures to install and configure the OpenShift Update Service (OSUS) in a disconnected environment.
+Upgrading OpenShift in a **disconnected (airgapped)** environment requires additional steps compared to a connected cluster.  
+Because the cluster cannot reach Red Hat’s public update services, you must provide your own **OpenShift Update Service (OSUS)** and configure it to trust your **internal registries** and **certificates**.
 
-The following steps outline the high-level workflow on how to update a cluster in a disconnected environment using OSUS:
+This document walks through the steps needed to set up OSUS and perform upgrades.
 
-Configure access to a secured registry.
-Update the global cluster pull secret to access your mirror registry.
-Install the OSUS Operator.
-Create a graph data container image for the OpenShift Update Service.
-Install the OSUS application and configure your clusters to use the OpenShift Update Service in your environment.
-Perform a supported update procedure from the documentation as you would with a connected cluster.
-~~~
+---
 
+## Pre-requisites
+- Update the operators to the latest versions.
+- Install the **cincinnati-operator** (this operator powers OSUS).
+- Update the `oc` CLI to the latest version.
 
+**Why:**  
+Operators must be upgraded first to ensure they are compatible with the target OpenShift version.  
+The Cincinnati operator provides the graph data and policies required for controlled upgrades.  
+The CLI tool must be up to date so it understands new cluster APIs and commands.
 
-2025-08-13 REF: https://docs.redhat.com/en/documentation/openshift_container_platform/4.18/html-single/disconnected_environments/index#connected-to-disconnected-config-registry_connected-to-disconnected
-  - "cincinnati-operator"
+**Reference:**  
+[Disconnected Environment Updates - Red Hat Docs](https://docs.redhat.com/en/documentation/openshift_container_platform/4.18/html/disconnected_environments/updating-a-cluster-in-a-disconnected-environment#updating-disconnected-cluster-osus)
 
-1.a) Install the cincinnati-operator operator
+---
 
-1.b) If you mirrored release images, apply the release image signatures to the cluster by running the following command:
+## Workflow Overview
+The high-level process:
+
+1. **Install the Cincinnati operator** – provides the policy engine for upgrades.  
+2. **Apply mirrored release signatures** – ensures payloads are trusted.  
+3. **Configure registry access** – so the cluster can pull mirrored images.  
+4. **Add router CA to trust bundle** – allows the CVO to talk to OSUS via ingress.  
+5. **Create the OSUS application** – deploys a local “over-the-air” update service.  
+6. **Configure the CVO** – point your cluster at the local OSUS service.  
+7. **Upgrade other clusters using OSUS** – re-use the same update service across multiple disconnected clusters.  
+
+---
+
+## Step 1: Install the Cincinnati Operator
+
+**What:**  
+Install the **Cincinnati operator** (the operator that provides policy/graph functionality used by the OpenShift Update Service).
+
+**Why:**  
+Cincinnati (the graph/policy engine) is the component that serves upgrade graph data and policies the Cluster Version Operator (CVO) consumes to determine valid upgrade paths. The operator must be installed and healthy before you point CVO at a local update service.
+
+**How (high level):**
+- Install via the Operator Lifecycle Manager (OLM) / OperatorHub in your environment (subscribe to the Cincinnati operator from your mirrored operator catalog), or apply the operator manifests from your mirrored operator bundle if you are not using the console.
+- Verify the operator is installed and healthy (check subscription/CSV and operator pods).
+
+**Example verification commands:**
+```bash
+# Check CSV / subscription state (replace namespace if different)
+oc get subscription -n <operator-namespace>
+oc get csv -n <operator-namespace>
+
+# Check operator pods
+oc get pods -n <operator-namespace> --selector=<operator-selector-if-known>
+```
+
+> Tip: install the operator from your mirrored catalog (not from the public catalog) so the install succeeds in an airgapped environment.
+
+---
+
+## Step 2: Apply Mirrored Release Image Signatures (release-signatures)
+
+**What:**  
+Apply the `release-signatures` produced by your `oc-mirror` run. These are the release verification artifacts (signatures/keys) that allow the CVO to verify mirrored release payloads.
+
+**Why:**  
+OpenShift verifies the authenticity of release payloads using release signatures. If signatures are missing or not applied to the cluster, CVO will refuse to verify the mirrored payload and the upgrade will fail with messages like *“The update cannot be verified…”* or *verifier-public-key-redhat* errors.
+
+**How (example):**
+```bash
+# From your oc-mirror output directory (example path from oc-mirror)
 oc apply -f ./oc-mirror-workspace/results-1639608409/release-signatures/
+```
 
-  - Doc Ref: 3.5.8. Configuring your cluster to use the resources generated by oc-mirror
-    (https://docs.redhat.com/en/documentation/openshift_container_platform/4.18/html-single/disconnected_environments/index#updating-a-cluster-in-a-disconnected-environment:~:text=3.5.8.%C2%A0Configuring%20your%20cluster%20to%20use%20the%20resources%20generated%20by%20oc%2Dmirror)
+**What to verify after applying:**
+- Confirm the `release-signatures` resources were created/applied in the cluster (the exact resource type depends on your oc-mirror output — check the files in the `release-signatures` directory).
+- Attempt a dry-check or an `oc adm upgrade` (or check CVO logs/conditions) to ensure the payloads are now verifiable by the cluster.
 
+**Notes:**  
+- Order matters: install the Cincinnati/operator (Step 1) **first**, then apply the release-signatures. Cincinnati/OSUS must be present so the graph/policy components can use the signatures when CVO queries them.
+- If you mirror multiple release versions, ensure all corresponding signature files are applied.
 
-2) Configuring access to a secured registry for the OpenShift Update Service
-REF: Configuring access to a secured registry for the OpenShift Update Service
-    https://docs.openshift.com/container-platform/4.15/updating/updating_a_cluster/updating_disconnected_cluster/disconnected-update-osus.html
-    https://docs.openshift.com/container-platform/4.17/disconnected/updating/disconnected-update-osus.html#updating-disconnected-cluster-osus:~:text=Updating%20a%20cluster%20in%20a%20disconnected%20environment%20using%20the%20OpenShift%20Update%20Service
-    
-    6.3.3. Configuring access to a secured registry for the OpenShift Update Service
-    - https://docs.redhat.com/en/documentation/openshift_container_platform/4.18/html/disconnected_environments/updating-a-cluster-in-a-disconnected-environment#registry-configuration-for-update-service_updating-disconnected-cluster-osus
-~~~    
+---
+
+## Step 3: Configure Access to a Secured Registry
+Disconnected clusters rely on your **internal registry mirror**.  
+The cluster must trust the registry’s TLS certificates before it can pull images.
+
+**What to do:**
+- Create a ConfigMap containing your registry’s CA certificate(s).
+- Reference this ConfigMap in the cluster-wide `Image` configuration.
+
+```yaml
 apiVersion: v1
 kind: ConfigMap
 metadata:
   name: my-registry-ca
 data:
-  updateservice-registry: |                      <P<<--- Important key word
+  updateservice-registry: |
     -----BEGIN CERTIFICATE-----
     ...
     -----END CERTIFICATE-----
-  registry-with-port.example.com..5000: | 
+  registry-with-port.example.com..5000: |
     -----BEGIN CERTIFICATE-----
     ...
     -----END CERTIFICATE-----
-~~~
-OR
-oc create configmap my-registry-ca \
-     --from-file=registry-with-port.example.com..5000=</path/to/example-ca.crt> \1
-     -n openshift-config
+```
 
--- Add the configmap 
-$ oc edit image.config.openshift.io cluster
-~~~
+Alternatively:
+
+```bash
+oc create configmap my-registry-ca   --from-file=registry-with-port.example.com..5000=</path/to/example-ca.crt>   -n openshift-config
+```
+
+Patch the cluster config:
+
+```yaml
 spec:
   additionalTrustedCA:
     name: registry-config
-~~~
-3) Add the router.ca (ingress) certificate to the user-ca-bundle
-REF: https://docs.redhat.com/en/documentation/openshift_container_platform/4.18/html/disconnected_environments/updating-a-cluster-in-a-disconnected-environment#update-service-create-service_updating-disconnected-cluster-osus:~:text=See%20Configuring%20the%20cluster%2Dwide%20proxy%20to%20configure%20the%20CA%20to%20trust%20the%20update%20server.
+```
 
-Ref: CVO is showing x509: certificate is signed by unknown authority in disconnected cluster
-     https://access.redhat.com/solutions/6975396
-~~~
-Resolution
-We need to add the ingress CA to the trust bundle using official documentation. Ingress CA is stored in the below-mentioned secret:
-~~~
-$ oc get secret -n openshift-ingress-operator router-ca -o yaml
-After extracting the CA cert from the router-ca secret and adding it to the user-ca-bundle, CVO will start communicating with the ingress router.
-~~~
+**Why:**  
+If the cluster does not trust your registry’s certificate, all image pulls will fail with TLS errors such as  
+`x509: certificate signed by unknown authority`.
 
-4) Creating an OpenShift Update Service application
-REF: https://docs.redhat.com/en/documentation/openshift_container_platform/4.18/html/disconnected_environments/updating-a-cluster-in-a-disconnected-environment#update-service-create-service_updating-disconnected-cluster-osus
+---
 
-Use the updateservice.yaml file from the oc-mirror output
+## Step 4: Add Router CA to the User CA Bundle
+The CVO must contact the **OSUS service endpoint** through your cluster’s ingress router.  
+By default, the router issues its own self-signed CA, which is not trusted by the CVO.
 
-5) Configuring the Cluster Version Operator (CVO)
-REF: https://docs.redhat.com/en/documentation/openshift_container_platform/4.18/html/disconnected_environments/updating-a-cluster-in-a-disconnected-environment#update-service-configure-cvo
+**What to do:**
+- Extract the router CA certificate:
+  ```bash
+  oc get secret -n openshift-ingress-operator router-ca -o yaml
+  ```
+- Add the certificate to the cluster’s `user-ca-bundle`.
 
-- Set the OpenShift Update Service target namespace, for example, openshift-update-service:
-$ NAMESPACE=openshift-update-service
+**Why:**  
+If the ingress CA is not trusted, the CVO cannot talk to the OSUS service.  
+This results in errors like:  
+`CVO is showing x509: certificate is signed by unknown authority`.
 
-- Set the name of the OpenShift Update Service application, for example, service:
-$ NAME=service
+**Reference:**  
+[Adding Ingress Router CA](https://docs.redhat.com/en/documentation/openshift_container_platform/4.18/html/disconnected_environments/updating-a-cluster-in-a-disconnected-environment#update-service-create-service_updating-disconnected-cluster-osus)
 
-- Obtain the policy engine route:
-$ POLICY_ENGINE_GRAPH_URI="$(oc -n "${NAMESPACE}" get -o jsonpath='{.status.policyEngineURI}/api/upgrades_info/v1/graph{"\n"}' updateservice "${NAME}")"
+---
 
-- Set the patch for the pull graph data:
-$ PATCH="{\"spec\":{\"upstream\":\"${POLICY_ENGINE_GRAPH_URI}\"}}"
+## Step 5: Create an OSUS Application
+Deploy the OSUS service using the `updateservice.yaml` generated by **oc-mirror**.
 
-- Patch the CVO to use the local OpenShift Update Service:
-$ oc patch clusterversion version -p $PATCH --type merge
+**Why:**  
+This application serves the **upgrade graph** that the CVO consumes.  
+It replicates the “Over-the-Air Updates” experience but inside your disconnected environment.
 
+**Reference:**  
+[Create OSUS Application](https://docs.redhat.com/en/documentation/openshift_container_platform/4.18/html/disconnected_environments/updating-a-cluster-in-a-disconnected-environment#update-service-create-service_updating-disconnected-cluster-osus)
 
------ Upgrade other cluster using OSUS instance -------------
-Ref: https://medium.com/@hillayamir/openshift-update-service-your-personal-over-the-air-update-service-776b43230011#id_token=eyJhbGciOiJSUzI1NiIsImtpZCI6ImQyZDQ0NGNmOGM1ZTNhZTgzODZkNjZhMTNhMzE2OTc2YWEzNjk5OTEiLCJ0eXAiOiJKV1QifQ.eyJpc3MiOiJodHRwczovL2FjY291bnRzLmdvb2dsZS5jb20iLCJhenAiOiIyMTYyOTYwMzU4MzQtazFrNnFlMDYwczJ0cDJhMmphbTRsamRjbXMwMHN0dGcuYXBwcy5nb29nbGV1c2VyY29udGVudC5jb20iLCJhdWQiOiIyMTYyOTYwMzU4MzQtazFrNnFlMDYwczJ0cDJhMmphbTRsamRjbXMwMHN0dGcuYXBwcy5nb29nbGV1c2VyY29udGVudC5jb20iLCJzdWIiOiIxMDIzOTIxNTg3NDg0MDE5NDkwNTQiLCJoZCI6InJlZGhhdC5jb20iLCJlbWFpbCI6ImViZWF1ZG9pQHJlZGhhdC5jb20iLCJlbWFpbF92ZXJpZmllZCI6dHJ1ZSwibmJmIjoxNzIzNjUwMzc1LCJuYW1lIjoiRXJpYyBCZWF1ZG9pbiIsImdpdmVuX25hbWUiOiJFcmljIiwiZmFtaWx5X25hbWUiOiJCZWF1ZG9pbiIsImlhdCI6MTcyMzY1MDY3NSwiZXhwIjoxNzIzNjU0Mjc1LCJqdGkiOiJhODMxMmI0NzNjZGUxMDVkM2JkODk1NTEwOWI5NWEyNjE0OWY4YmU4In0.DlDulq33_NnZA7P8Utz82Quh0E8Oqr0WvPGA-pRTw9K71rQzxkpeuSde3ZsbMwtX98tLdVd0n9-Zj6ZQIcVVLbswSGGe0NAxwWHvf3x3BpQ1q5zDVENkrha3atfaudM7q1xv26ziCAKG6n9-KtubGdY6Kei6j9bKzZdUu2yxgDLHPCK_wSkldcR54GJ1RWtxhbalvjBzYE4q8AWVVVvWC176cGcagOWP2Th2BtgkS6YOVI0cs40EWrl7WjYtgoz_FIEqSoWKmYmHZAl_-ezEbqWfdYzeFwx5LTq1MOmSdPk5VGAm2CROHOvDq63NVfRl7ei6cKfRRwbOB5XjInsgGQ
+---
 
-- In order to get the route, run the following command on the cluster that hosting our upgrade service / search under networking and filter by NS openshift-update-service:
-$ POLICY_ENGINE_GRAPH_URI="$(oc -n openshift-update-service get updateservice <update-service-name> -o jsonpath='{.status.policyEngineURI}/api/upgrades_info/v1/graph')"
+## Step 6: Configure the Cluster Version Operator (CVO)
+The CVO needs to be pointed at your local OSUS service instead of Red Hat’s public one.
 
-- To make sure we got the right url lets print the variable that we’ve just set, your route should look something similar to this:
-$ echo $POLICY_ENGINE_GRAPH_URI https://update-service-route-openshift-update-service.apps.ocp.example.com/api/upgrades_info/v1/graph
+**What to do:**
+```bash
+NAMESPACE=openshift-update-service
+NAME=service
 
-- You can go ahead and paste it in your browser, you wont get anything pretty just a “access denied” message in json.
+POLICY_ENGINE_GRAPH_URI="$(oc -n "${NAMESPACE}" get -o jsonpath='{.status.policyEngineURI}/api/upgrades_info/v1/graph{"
+"}' updateservice "${NAME}")"
+PATCH="{\"spec\":{\"upstream\":\"${POLICY_ENGINE_GRAPH_URI}\"}}"
 
-3. In order to configure your clusters to your update service, perform the following command on each cluster you wish to have the ability to update through OSUS:
-$ PATCH="{\"spec\":{\"upstream\":\"${POLICY_ENGINE_GRAPH_URI}\"}}"
-$ oc patch clusterversion version -p $PATCH --type merge
+oc patch clusterversion version -p $PATCH --type merge
+```
 
-The “bug” is that OSUS is not ‘serving’ the version signatures.yaml and thus every upgrade will get stuck at the very beginning — In order to fix this you’ll need to enter another command just like before and run the upgrade in the desired clusters UI:
+**Why:**  
+By default, the CVO looks at `api.openshift.com` for updates.  
+In a disconnected cluster, this will fail.  
+This patch redirects the CVO to your local OSUS.
 
-$ oc patch clusterversion version --type json -p '[{"op": "add", "path": "/spec/desiredUpdate/force", "value": true}]'
+---
 
+## Step 7: Upgrade Other Clusters Using OSUS
+Once OSUS is working, you can point other disconnected clusters to the same service.
 
---------------- ERRRORS -------------------
-Retrieving payload failed version="4.15.24" image="quay.devu.ca:8443/openshift-platform-v415/openshift/release-images@sha256:88d387f6fdae0c77613041aa6166ea35b301a3201becb8e1f354065ee3ee3a6c" failure=The update cannot be verified: unable to verify sha256:88d387f6fdae0c77613041aa6166ea35b301a3201becb8e1f354065ee3ee3a6c against keyrings: verifier-public-key-redhat
+**Steps:**
+1. Retrieve the OSUS route:
+   ```bash
+   POLICY_ENGINE_GRAPH_URI="$(oc -n openshift-update-service get updateservice <update-service-name> -o jsonpath='{.status.policyEngineURI}/api/upgrades_info/v1/graph')"
+   echo $POLICY_ENGINE_GRAPH_URI
+   ```
+2. Patch each cluster:
+   ```bash
+   PATCH="{\"spec\":{\"upstream\":\"${POLICY_ENGINE_GRAPH_URI}\"}}"
+   oc patch clusterversion version -p $PATCH --type merge
+   ```
 
+3. If upgrades stall due to missing signatures, force them:
+   ```bash
+   oc patch clusterversion version --type json -p '[{"op": "add", "path": "/spec/desiredUpdate/force", "value": true}]'
+   ```
 
+**Why:**  
+This enables you to run a **centralized update service** for multiple clusters, instead of replicating OSUS everywhere.
 
-updateService.yaml
+---
 
+## Architecture Diagram – Single Cluster
 
-image.config.openshift.io.Spec.AdditionalTrustedCA.Name not set for image name cluster
+```mermaid
+flowchart TD
+    subgraph Registry["Internal Mirror Registry"]
+        Images[(Mirrored Release Images)]
+        Signatures[(Release Signatures)]
+    end
 
-additionalTrustedCA quay-ca
+    subgraph OSUS["OpenShift Update Service (Cincinnati)"]
+        Operator[Cincinnati Operator]
+        Graph[Upgrade Graph Data]
+    end
 
-status:
-  conditions:
-  - lastHeartbeatTime: "2024-08-13T17:39:39Z"
-    lastTransitionTime: "2024-08-13T17:39:39Z"
-    message: 'Found ConfigMap referenced by ImageConfig.Spec.AdditionalTrustedCA.Name
-      but did not find key ''updateservice-registry'' for registry CA cert in ConfigMap
-      (Name: quay-ca, Namespace: openshift-config)'
-    reason: EnsureAdditionalTrustedCAFailed
-    status: "False"
-    type: RegistryCACertFound
+    subgraph Cluster["Disconnected OpenShift Cluster"]
+        CVO[Cluster Version Operator (CVO)]
+        UserCA[User-CA Bundle (Trusts Registry + Router CA)]
+    end
 
+    Registry -->|Pull payloads| CVO
+    Signatures -->|Verify Payloads| CVO
+    Operator --> Graph
+    Graph -->|Provide Upgrade Graph| CVO
+    UserCA -->|Trust for TLS| CVO
 
+    CVO -->|Applies Upgrade| Cluster
+```
 
-[root@AIRGAP 02:18 PM] results-1723556246 # oc adm upgrade
-Cluster version is 4.15.16
+---
 
-Upstream: https://update-service-oc-mirror-route-openshift-update-service.apps.os7.devu.ca/api/upgrades_info/v1/graph
-Channel: stable-4.15
-warning: Cannot display available updates:
-  Reason: RemoteFailed
-  Message: Unable to retrieve available updates: Get "https://update-service-oc-mirror-route-openshift-update-service.apps.os7.devu.ca/api/upgrades_info/v1/graph?arch=amd64&channel=stable-4.15&id=68cdd739-ad28-4cbb-8760-67fe75b2ceb7&version=4.15.16": tls: failed to verify certificate: x509: certificate signed by unknown authority
+## Architecture Diagram – Multi-Cluster Setup
 
---------------------- Testing if we can use 2 different registry organisation for an upgrade -------------------------
-oc get idms image-digest-mirror -o yaml
-apiVersion: config.openshift.io/v1
-kind: ImageDigestMirrorSet
-metadata:
-  annotations:
-    kubectl.kubernetes.io/last-applied-configuration: |
-      {"apiVersion":"config.openshift.io/v1","kind":"ImageDigestMirrorSet","metadata":{"annotations":{},"creationTimestamp":"2025-08-11T15:58:53Z","generation":1,"name":"image-digest-mirror","resourceVersion":"1039","uid":"2777be27-20bf-437b-84e2-a18246d2d81a"},"spec":{"imageDigestMirrors":[{"mirrors":["quay.tdl.devu.ca:8443/openshift-platform-v418.21/openshift/release","quay.tdl.devu.ca:8443/openshift-platform-417.20/openshift/release"],"source":"quay.io/openshift-release-dev/ocp-v4.0-art-dev"},{"mirrors":["quay.tdl.devu.ca:8443/openshift-platform-v418.21/openshift/release-images","quay.tdl.devu.ca:8443/openshift-platform-417.20/openshift/release-images"],"source":"quay.io/openshift-release-dev/ocp-release"}]},"status":{}}
-  creationTimestamp: "2025-08-11T15:58:53Z"
-  generation: 2
-  name: image-digest-mirror
-  resourceVersion: "1106595"
-  uid: 2777be27-20bf-437b-84e2-a18246d2d81a
-spec:
-  imageDigestMirrors:
-  - mirrors:
-    - quay.tdl.devu.ca:8443/openshift-platform-v418.21/openshift/release
-    - quay.tdl.devu.ca:8443/openshift-platform-417.20/openshift/release
-    source: quay.io/openshift-release-dev/ocp-v4.0-art-dev
-  - mirrors:
-    - quay.tdl.devu.ca:8443/openshift-platform-v418.21/openshift/release-images
-    - quay.tdl.devu.ca:8443/openshift-platform-417.20/openshift/release-images
-    source: quay.io/openshift-release-dev/ocp-release
-status: {}
+```mermaid
+flowchart TD
+    subgraph Registry["Internal Mirror Registry"]
+        Images[(Mirrored Release Images)]
+        Signatures[(Release Signatures)]
+    end
 
+    subgraph OSUS["Centralized OpenShift Update Service"]
+        Operator[Cincinnati Operator]
+        Graph[Upgrade Graph Data]
+    end
 
+    subgraph ClusterA["Cluster A"]
+        CVOA[Cluster Version Operator (CVO)]
+    end
+
+    subgraph ClusterB["Cluster B"]
+        CVOB[Cluster Version Operator (CVO)]
+    end
+
+    subgraph ClusterC["Cluster C"]
+        CVOC[Cluster Version Operator (CVO)]
+    end
+
+    Registry -->|Pull payloads| CVOA
+    Registry -->|Pull payloads| CVOB
+    Registry -->|Pull payloads| CVOC
+
+    Signatures -->|Verify Payloads| CVOA
+    Signatures -->|Verify Payloads| CVOB
+    Signatures -->|Verify Payloads| CVOC
+
+    Operator --> Graph
+    Graph -->|Provide Upgrade Graph| CVOA
+    Graph -->|Provide Upgrade Graph| CVOB
+    Graph -->|Provide Upgrade Graph| CVOC
+
+    CVOA -->|Applies Upgrade| ClusterA
+    CVOB -->|Applies Upgrade| ClusterB
+    CVOC -->|Applies Upgrade| ClusterC
+```
+
+---
+
+## Quick Reference Summary Table
+
+| **Step** | **Purpose** | **Key Action / Command** |
+|----------|-------------|---------------------------|
+| 1. Install Cincinnati Operator | Provides upgrade graph/policy engine for OSUS | Install operator from mirrored catalog, verify pods and CSV |
+| 2. Apply Release Signatures | Allow CVO to verify mirrored release payloads | `oc apply -f ./oc-mirror-workspace/.../release-signatures/` |
+| 3. Configure Registry Access | Trust internal registry TLS certs | Create ConfigMap with CA → reference in `Image` config |
+| 4. Add Router CA | Trust ingress router CA so CVO can reach OSUS | Extract `router-ca` secret → add to `user-ca-bundle` |
+| 5. Create OSUS Application | Deploy local update service | Apply `updateservice.yaml` from `oc-mirror` output |
+| 6. Configure CVO | Point cluster to OSUS instead of api.openshift.com | Patch `clusterversion` with `POLICY_ENGINE_GRAPH_URI` |
+| 7. Upgrade Other Clusters | Reuse OSUS for multiple clusters | Patch CVO upstream on each cluster, force upgrade if stuck |
+
+---
+
+## Happy Path Runbook (Minimal Checklist)
+
+Follow this sequence for a straightforward upgrade in a disconnected environment.  
+Replace variables (like `<namespace>`, `<update-service-name>`, and paths) as needed.
+
+### 1. Install the Cincinnati Operator
+```bash
+# From your mirrored operator catalog
+oc get subscription -n openshift-operators
+oc get csv -n openshift-operators
+```
+
+Verify the Cincinnati operator is installed and running.
+
+---
+
+### 2. Apply Release Signatures
+```bash
+oc apply -f ./oc-mirror-workspace/results-*/release-signatures/
+```
+
+---
+
+### 3. Configure Registry Trust
+```bash
+oc create configmap my-registry-ca   --from-file=registry-with-port.example.com..5000=</path/to/example-ca.crt>   -n openshift-config
+
+oc edit image.config.openshift.io cluster
+# Set:
+# spec:
+#   additionalTrustedCA:
+#     name: my-registry-ca
+```
+
+---
+
+### 4. Add Router CA to User-CA Bundle
+```bash
+oc get secret -n openshift-ingress-operator router-ca -o yaml > router-ca.yaml
+# Extract the certificate and add it to your user-ca-bundle configmap
+```
+
+---
+
+### 5. Deploy the OSUS Application
+```bash
+oc apply -f ./oc-mirror-workspace/results-*/updateservice.yaml
+```
+
+---
+
+### 6. Configure the CVO to Use OSUS
+```bash
+NAMESPACE=openshift-update-service
+NAME=service
+
+POLICY_ENGINE_GRAPH_URI="$(oc -n "${NAMESPACE}" get -o jsonpath='{.status.policyEngineURI}/api/upgrades_info/v1/graph' updateservice "${NAME}")"
+
+PATCH="{\"spec\":{\"upstream\":\"${POLICY_ENGINE_GRAPH_URI}\"}}"
+oc patch clusterversion version -p $PATCH --type merge
+```
+
+---
+
+### 7. Upgrade Other Clusters (Optional)
+```bash
+# On each cluster you want to connect to the same OSUS
+PATCH="{\"spec\":{\"upstream\":\"${POLICY_ENGINE_GRAPH_URI}\"}}"
+oc patch clusterversion version -p $PATCH --type merge
+
+# If upgrade stalls (signatures issue), force upgrade
+oc patch clusterversion version --type json -p '[{"op": "add", "path": "/spec/desiredUpdate/force", "value": true}]'
+```
+
+---
+
+✅ At this point, your cluster(s) should be able to upgrade in the same way as connected clusters, but using your **local registry** and **local OSUS**.
+
+---
+
+## References
+- [Disconnected Environments - Red Hat Docs](https://docs.redhat.com/en/documentation/openshift_container_platform/4.18/html/disconnected_environments/)
+- [Configuring Registry Access](https://docs.redhat.com/en/documentation/openshift_container_platform/4.18/html/disconnected_environments/updating-a-cluster-in-a-disconnected-environment#registry-configuration-for-update-service_updating-disconnected-cluster-osus)
+- [OpenShift Update Service - Medium Guide](https://medium.com/@hillayamir/openshift-update-service-your-personal-over-the-air-update-service-776b43230011)
