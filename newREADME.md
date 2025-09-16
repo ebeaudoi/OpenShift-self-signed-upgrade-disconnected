@@ -25,38 +25,70 @@ The CLI tool must be up to date so it understands new cluster APIs and commands.
 ## Workflow Overview
 The high-level process:
 
-1. **Configure registry access** – so the cluster can pull mirrored images.
-2. **Update global pull secret** – to authenticate against your mirror registry.
-3. **Install OSUS Operator** – deploys update services in disconnected clusters.
-4. **Create OSUS graph image** – generates upgrade paths from mirrored release metadata.
-5. **Deploy OSUS application** – provides a local “over-the-air” update service.
-6. **Configure the CVO** – point your cluster at the local OSUS service.
-7. **Perform upgrades** – now the disconnected cluster behaves like a connected one.
+1. **Install the Cincinnati operator** – provides the policy engine for upgrades.  
+2. **Apply mirrored release signatures** – ensures payloads are trusted.  
+3. **Configure registry access** – so the cluster can pull mirrored images.  
+4. **Add router CA to trust bundle** – allows the CVO to talk to OSUS via ingress.  
+5. **Create the OSUS application** – deploys a local “over-the-air” update service.  
+6. **Configure the CVO** – point your cluster at the local OSUS service.  
+7. **Upgrade other clusters using OSUS** – re-use the same update service across multiple disconnected clusters.  
 
 ---
 
 ## Step 1: Install the Cincinnati Operator
-The **Cincinnati operator** is responsible for serving upgrade graph information.  
-Without it, the Cluster Version Operator (CVO) cannot determine valid upgrade paths.
 
-**What to do:**
-- Deploy the Cincinnati operator.
-- Apply mirrored release image signatures (if you mirrored release payloads).  
+**What:**  
+Install the **Cincinnati operator** (the operator that provides policy/graph functionality used by the OpenShift Update Service).
 
+**Why:**  
+Cincinnati (the graph/policy engine) is the component that serves upgrade graph data and policies the Cluster Version Operator (CVO) consumes to determine valid upgrade paths. The operator must be installed and healthy before you point CVO at a local update service.
+
+**How (high level):**
+- Install via the Operator Lifecycle Manager (OLM) / OperatorHub in your environment (subscribe to the Cincinnati operator from your mirrored operator catalog), or apply the operator manifests from your mirrored operator bundle if you are not using the console.
+- Verify the operator is installed and healthy (check subscription/CSV and operator pods).
+
+**Example verification commands:**
 ```bash
-oc apply -f ./oc-mirror-workspace/results-1639608409/release-signatures/
+# Check CSV / subscription state (replace namespace if different)
+oc get subscription -n <operator-namespace>
+oc get csv -n <operator-namespace>
+
+# Check operator pods
+oc get pods -n <operator-namespace> --selector=<operator-selector-if-known>
 ````
 
-**Why:**
-Release signatures prove the authenticity of mirrored release images.
-If not applied, the CVO will refuse upgrades because it cannot verify payload integrity.
-
-**Reference:**
-[3.5.8 Configuring oc-mirror Resources](https://docs.redhat.com/en/documentation/openshift_container_platform/4.18/html-single/disconnected_environments/index#updating-a-cluster-in-a-disconnected-environment:~:text=3.5.8.%C2%A0Configuring%20your%20cluster%20to%20use%20the%20resources%20generated%20by%20oc%2Dmirror)
+> Tip: install the operator from your mirrored catalog (not from the public catalog) so the install succeeds in an airgapped environment.
 
 ---
 
-## Step 2: Configure Access to a Secured Registry
+## Step 2: Apply Mirrored Release Image Signatures (release-signatures)
+
+**What:**
+Apply the `release-signatures` produced by your `oc-mirror` run. These are the release verification artifacts (signatures/keys) that allow the CVO to verify mirrored release payloads.
+
+**Why:**
+OpenShift verifies the authenticity of release payloads using release signatures. If signatures are missing or not applied to the cluster, CVO will refuse to verify the mirrored payload and the upgrade will fail with messages like *“The update cannot be verified…”* or *verifier-public-key-redhat* errors.
+
+**How (example):**
+
+```bash
+# From your oc-mirror output directory (example path from oc-mirror)
+oc apply -f ./oc-mirror-workspace/results-1639608409/release-signatures/
+```
+
+**What to verify after applying:**
+
+* Confirm the `release-signatures` resources were created/applied in the cluster (the exact resource type depends on your oc-mirror output — check the files in the `release-signatures` directory).
+* Attempt a dry-check or an `oc adm upgrade` (or check CVO logs/conditions) to ensure the payloads are now verifiable by the cluster.
+
+**Notes:**
+
+* Order matters: install the Cincinnati/operator (Step 1) **first**, then apply the release-signatures. Cincinnati/OSUS must be present so the graph/policy components can use the signatures when CVO queries them.
+* If you mirror multiple release versions, ensure all corresponding signature files are applied.
+
+---
+
+## Step 3: Configure Access to a Secured Registry
 
 Disconnected clusters rely on your **internal registry mirror**.
 The cluster must trust the registry’s TLS certificates before it can pull images.
@@ -104,7 +136,7 @@ If the cluster does not trust your registry’s certificate, all image pulls wil
 
 ---
 
-## Step 3: Add Router CA to the User CA Bundle
+## Step 4: Add Router CA to the User CA Bundle
 
 The CVO must contact the **OSUS service endpoint** through your cluster’s ingress router.
 By default, the router issues its own self-signed CA, which is not trusted by the CVO.
@@ -128,7 +160,7 @@ This results in errors like:
 
 ---
 
-## Step 4: Create an OSUS Application
+## Step 5: Create an OSUS Application
 
 Deploy the OSUS service using the `updateservice.yaml` generated by **oc-mirror**.
 
@@ -141,7 +173,7 @@ It replicates the “Over-the-Air Updates” experience but inside your disconne
 
 ---
 
-## Step 5: Configure the Cluster Version Operator (CVO)
+## Step 6: Configure the Cluster Version Operator (CVO)
 
 The CVO needs to be pointed at your local OSUS service instead of Red Hat’s public one.
 
@@ -164,7 +196,7 @@ This patch redirects the CVO to your local OSUS.
 
 ---
 
-## Step 6: Upgrade Other Clusters Using OSUS
+## Step 7: Upgrade Other Clusters Using OSUS
 
 Once OSUS is working, you can point other disconnected clusters to the same service.
 
@@ -262,6 +294,3 @@ This allows flexibility when multiple registry namespaces or versions are mirror
 ```
 
 ---
-
-Would you like me to also create a **diagram (in Mermaid or ASCII)** showing the OSUS architecture (registry, update service, CVO, and cluster flow)? That could help visualize the process.
-```
