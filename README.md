@@ -238,37 +238,7 @@ flowchart TD
 ```
 ## Architecture Diagram – Single Cluster
 
-flowchart TD
-    %% Subgraphs
-    subgraph Registry [Internal Mirror Registry]
-        Images[(Mirrored Release Images)]
-        Signatures[(Release Signatures)]
-    end
-
-    subgraph OSUS [OpenShift Update Service (Cincinnati)]
-        Operator[Cincinnati Operator]
-        Graph[Upgrade Graph Data]
-    end
-
-    subgraph Cluster [Disconnected OpenShift Cluster]
-        CVO[Cluster Version Operator (CVO)]
-        UserCA[User-CA Bundle (Trusts Registry + Router CA)]
-    end
-
-    %% Connections
-    Registry -->|Pull payloads| CVO
-    Signatures -->|Verify Payloads| CVO
-    Operator --> Graph
-    Graph -->|Provide Upgrade Graph| CVO
-    UserCA -->|Trust for TLS| CVO
-
-    CVO -->|Applies Upgrade| Cluster
-
-
-
-
-
-
+![alt text](image.png)
 ---
 
 ## Architecture Diagram – Multi-Cluster Setup
