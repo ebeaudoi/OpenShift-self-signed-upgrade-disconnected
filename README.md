@@ -92,7 +92,7 @@ Disconnected clusters rely on your **registry mirror**.
 The cluster must trust the registry’s TLS certificates before it can pull images.
 
 **What to do:**
-- Create a ConfigMap containing your registry’s CA certificate(s).
+- Create a ConfigMap containing your registry’s certificate(s).
 - Reference this ConfigMap in the cluster-wide `Image` configuration.
 
 ```yaml
@@ -115,6 +115,9 @@ Alternatively:
 
 ```bash
 oc create configmap my-registry-ca   --from-file=registry-with-port.example.com..5000=</path/to/example-ca.crt>   -n openshift-config
+
+#Example
+oc create configmap my-registry-ca   --from-file=updateservice-registry=/etc/pki/ca-trust/source/anchors/ssl.cert --from-file=ebdn-quay.disconnected.ebdn.com..8443=/etc/pki/ca-trust/source/anchors/ssl.cert   -n openshift-config
 ```
 
 Patch the cluster config:
@@ -125,7 +128,7 @@ oc edit image.config.openshift.io cluster
 ```yaml
 spec:
   additionalTrustedCA:
-    name: registry-config
+    name: my-registry-ca
 ```
 
 **Why:**  
