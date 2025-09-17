@@ -75,8 +75,8 @@ oc apply -f ./oc-mirror-workspace/results-1639608409/release-signatures/
 
 **What to verify after applying:**
 - Verify that the new configmap containing the image signatures has been created.
-- Run the following command:
   ```bash
+  # Get the new created configmap
   oc get cm -n openshift-config-managed|grep -i relea
   mirrored-release-signatures                   1      2m2s
   release-verification                          3      4d20h
