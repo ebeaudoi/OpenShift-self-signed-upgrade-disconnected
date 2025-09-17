@@ -62,7 +62,7 @@ oc get pods -n openshift-update-service --selector name=updateservice-operator
 ## Step 2: Apply Mirrored Release Image Signatures (release-signatures)
 
 **What:**  
-Apply the `release-signatures` produced by your `oc-mirror` run. These are the release verification artifacts (signatures/keys) that allow the CVO to verify mirrored release payloads.
+Apply the `release-signatures` produced by your `oc-mirror run` for the new OpenShift platform that you want to upgrade to.  These are the release verification artifacts (signatures/keys) that allow the CVO to verify mirrored release payloads.
 
 **Why:**  
 OpenShift verifies the authenticity of release payloads using release signatures. If signatures are missing or not applied to the cluster, CVO will refuse to verify the mirrored payload and the upgrade will fail with messages like *“The update cannot be verified…”* or *verifier-public-key-redhat* errors.
@@ -74,9 +74,13 @@ oc apply -f ./oc-mirror-workspace/results-1639608409/release-signatures/
 ```
 
 **What to verify after applying:**
-- Confirm the `release-signatures` resources were created/applied in the cluster (the exact resource type depends on your oc-mirror output — check the files in the `release-signatures` directory).
-- Attempt a dry-check or an `oc adm upgrade` (or check CVO logs/conditions) to ensure the payloads are now verifiable by the cluster.
-
+- Verify that the new configmap containing the image signatures has been created.
+- Run the following command:
+  ```bash
+  oc get cm -n openshift-config-managed|grep -i relea
+  mirrored-release-signatures                   1      2m2s
+  release-verification                          3      4d20h
+  ```
 **Notes:**  
 - Order matters: install the Cincinnati/operator (Step 1) **first**, then apply the release-signatures. Cincinnati/OSUS must be present so the graph/policy components can use the signatures when CVO queries them.
 - If you mirror multiple release versions, ensure all corresponding signature files are applied.
