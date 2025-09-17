@@ -50,11 +50,11 @@ Cincinnati (the graph/policy engine) is the component that serves upgrade graph 
 **Example verification commands:**
 ```bash
 # Check CSV / subscription state (replace namespace if different)
-oc get subscription -n <operator-namespace>
-oc get csv -n <operator-namespace>
+oc get subscription -n openshift-update-service
+oc get csv -n openshift-update-service
 
 # Check operator pods
-oc get pods -n <operator-namespace> --selector=<operator-selector-if-known>
+oc get pods -n openshift-update-service --selector name=updateservice-operator
 ```
 
 ---
