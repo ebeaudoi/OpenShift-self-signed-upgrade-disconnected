@@ -118,7 +118,10 @@ oc create configmap my-registry-ca   --from-file=registry-with-port.example.com.
 ```
 
 Patch the cluster config:
-
+```bash
+# Edit the Openshit cluster image config and update the additionalTrustedCA
+oc edit image.config.openshift.io cluster
+```
 ```yaml
 spec:
   additionalTrustedCA:
