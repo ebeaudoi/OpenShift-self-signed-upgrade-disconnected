@@ -1,7 +1,7 @@
 # Upgrade in Airgapped Environment
 
 Upgrading OpenShift in a **disconnected (airgapped)** environment requires additional steps compared to a connected cluster.  
-Because the cluster cannot reach Red Hat’s public update services, you must provide your own **OpenShift Update Service (OSUS)** and configure it to trust your **internal registries** and **certificates**.
+Because the cluster cannot reach Red Hat’s public update services, you must provide your own **OpenShift Update Service (OSUS)** and configure it to trust your **registries** and **certificates**.
 
 This document walks through the steps needed to set up OSUS and perform upgrades.
 
@@ -57,8 +57,6 @@ oc get csv -n <operator-namespace>
 oc get pods -n <operator-namespace> --selector=<operator-selector-if-known>
 ```
 
-> Tip: install the operator from your mirrored catalog (not from the public catalog) so the install succeeds in an airgapped environment.
-
 ---
 
 ## Step 2: Apply Mirrored Release Image Signatures (release-signatures)
@@ -86,7 +84,7 @@ oc apply -f ./oc-mirror-workspace/results-1639608409/release-signatures/
 ---
 
 ## Step 3: Configure Access to a Secured Registry
-Disconnected clusters rely on your **internal registry mirror**.  
+Disconnected clusters rely on your **registry mirror**.  
 The cluster must trust the registry’s TLS certificates before it can pull images.
 
 **What to do:**
@@ -215,7 +213,7 @@ This enables you to run a **centralized update service** for multiple clusters, 
 |----------|-------------|---------------------------|
 | 1. Install Cincinnati Operator | Provides upgrade graph/policy engine for OSUS | Install operator from mirrored catalog, verify pods and CSV |
 | 2. Apply Release Signatures | Allow CVO to verify mirrored release payloads | `oc apply -f ./oc-mirror-workspace/.../release-signatures/` |
-| 3. Configure Registry Access | Trust internal registry TLS certs | Create ConfigMap with CA → reference in `Image` config |
+| 3. Configure Registry Access | Trust registry TLS certs | Create ConfigMap with CA → reference in `Image` config |
 | 4. Add Router CA | Trust ingress router CA so CVO can reach OSUS | Extract `router-ca` secret → add to `user-ca-bundle` |
 | 5. Create OSUS Application | Deploy local update service | Apply `updateservice.yaml` from `oc-mirror` output |
 | 6. Configure CVO | Point cluster to OSUS instead of api.openshift.com | Patch `clusterversion` with `POLICY_ENGINE_GRAPH_URI` |
