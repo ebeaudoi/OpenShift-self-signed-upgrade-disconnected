@@ -358,27 +358,46 @@ oc edit image.config.openshift.io cluster
 ```bash
 oc get secret -n openshift-ingress-operator router-ca -o yaml > router-ca.yaml
 # Extract the certificate and add it to your user-ca-bundle configmap
+# Add the user-ca-bundle to the `proxy cluster` under "trustedCA:"
 ```
+```yaml
 
+```
+spec:
+  trustedCA:
+    name: user-ca-bundle
+status: {}
 ---
 
 ### 5. Deploy the OSUS Application
 ```bash
-oc apply -f ./oc-mirror-workspace/results-*/updateservice.yaml
+oc apply -f ./oc-mirror-workspace/results-*/updateservice.yaml -n openshift-update-service
 ```
 
 ---
 
 ### 6. Configure the CVO to Use OSUS
 ```bash
+# Set the OpenShift Update Service target namespace, for example, openshift-update-service:
 NAMESPACE=openshift-update-service
-NAME=service
 
-POLICY_ENGINE_GRAPH_URI="$(oc -n "${NAMESPACE}" get -o jsonpath='{.status.policyEngineURI}/api/upgrades_info/v1/graph' updateservice "${NAME}")"
+# Set the name of the OpenShift Update Service application, for example, service:
+NAME=update-service-oc-mirror
 
+# Obtain the policy engine route:
+POLICY_ENGINE_GRAPH_URI="$(oc -n "${NAMESPACE}" get -o jsonpath='{.status.policyEngineURI}/api/upgrades_info/v1/graph{"\n"}' updateservice "${NAME}")"
+
+# Set the patch for the pull graph data:
 PATCH="{\"spec\":{\"upstream\":\"${POLICY_ENGINE_GRAPH_URI}\"}}"
+
+# Patch the CVO to use the local OpenShift Update Service:
 oc patch clusterversion version -p $PATCH --type merge
 ```
+---
+
+
+## OpenShift upgrade troubleshooting
+[OpenShift upgrade troubleshooting command line](OCP-OSUS-troubleshooting-commands.md)
 
 ---
 
