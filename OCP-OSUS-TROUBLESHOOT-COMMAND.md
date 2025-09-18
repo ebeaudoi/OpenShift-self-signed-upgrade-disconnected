@@ -16,6 +16,7 @@ These commands help you see the cluster's current version and what upgrade paths
 
 * **Verify a specific upgrade path**
     ```bash
+    Next_Version=4.18.21
     oc adm release info ${Next_Version} | grep Upgrades
     ```
     This command checks the metadata for a specific target release (`${Next_Version}`) to see the valid versions it can be upgraded *from*. This is useful for confirming your intended upgrade path is valid.
@@ -40,7 +41,7 @@ These commands are for inspecting the components of the OpenShift Update Service
 
 * **Confirm trusted CA is mounted in the OSUS pod**
     ```bash
-    oc get pod -n openshift-update-service update-service-oc-mirror-56f99dff66-267xq -o yaml | grep -B1 "trusted-ca"
+    oc get pod -n openshift-update-service update-service-oc-mirror-<id> -o yaml | grep -B1 "trusted-ca"
     ```
     This command inspects the configuration of a specific OSUS pod to verify that a custom Certificate Authority (CA) has been correctly mounted. This is critical for ensuring OSUS can communicate with a mirror registry that uses a self-signed TLS certificate.
 
@@ -88,7 +89,8 @@ These commands are used to check that the disconnected image mirroring is config
 
 * **Search for a release image in the mirror registry**
     ```bash
-    podman search --list-tags [your-mirror-registry.com/openshift-ocp-release](https://your-mirror-registry.com/openshift-ocp-release) | grep "4.16.5"
+    Next_Version=4.18.21
+    podman search --list-tags [your-mirror-registry.com/openshift-ocp-release](https://your-mirror-registry.com/openshift-ocp-release) | grep (`${Next_Version}`)
     ```
     This command is run from a machine with access to your mirror registry to confirm that the target OpenShift release image was successfully mirrored and is available.
 
