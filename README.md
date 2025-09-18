@@ -297,27 +297,13 @@ This patch redirects the CVO to your local OSUS.
 ## Step 7: Upgrade Other Clusters Using OSUS
 Once OSUS is working, you can point other disconnected clusters to the same service.
 
-**Steps:**
-1. Retrieve the OSUS route:
-   ```bash
-   POLICY_ENGINE_GRAPH_URI="$(oc -n openshift-update-service get updateservice <update-service-name> -o jsonpath='{.status.policyEngineURI}/api/upgrades_info/v1/graph')"
-   echo $POLICY_ENGINE_GRAPH_URI
-   ```
-2. Patch each cluster:
-   ```bash
-   PATCH="{\"spec\":{\"upstream\":\"${POLICY_ENGINE_GRAPH_URI}\"}}"
-   oc patch clusterversion version -p $PATCH --type merge
-   ```
+### Initiating the Upgrade from the Web Console
 
-3. If upgrades stall due to missing signatures, force them:
-   ```bash
-   oc patch clusterversion version --type json -p '[{"op": "add", "path": "/spec/desiredUpdate/force", "value": true}]'
-   ```
-
-**Why:**  
-This enables you to run a **centralized update service** for multiple clusters, instead of replicating OSUS everywhere.
-
----
+1.  Log in to the OpenShift web console and navigate to the **Administration** > **Cluster Settings** section.
+2.  On the **Details** tab, locate the **Update status** section, which shows the recommended upgrade path.
+    ![OpenShift cluster update screen showing an available update to version 4.18.23.](availabilityupdatev41823.png)
+3.  Click the **Select a version** button.
+4.  Choose the desired version from the dropdown menu and click **Update** to begin the process.
 
 ## Quick Reference Summary Table
 
@@ -329,7 +315,6 @@ This enables you to run a **centralized update service** for multiple clusters, 
 | 4. Add Router CA | Trust ingress router CA so CVO can reach OSUS | Extract `router-ca` secret → add to `user-ca-bundle` |
 | 5. Create OSUS Application | Deploy local update service | Apply `updateservice.yaml` from `oc-mirror` output |
 | 6. Configure CVO | Point cluster to OSUS instead of api.openshift.com | Patch `clusterversion` with `POLICY_ENGINE_GRAPH_URI` |
-| 7. Upgrade Other Clusters | Reuse OSUS for multiple clusters | Patch CVO upstream on each cluster, force upgrade if stuck |
 
 ---
 
@@ -394,22 +379,6 @@ POLICY_ENGINE_GRAPH_URI="$(oc -n "${NAMESPACE}" get -o jsonpath='{.status.policy
 PATCH="{\"spec\":{\"upstream\":\"${POLICY_ENGINE_GRAPH_URI}\"}}"
 oc patch clusterversion version -p $PATCH --type merge
 ```
-
----
-
-### 7. Upgrade Other Clusters (Optional)
-```bash
-# On each cluster you want to connect to the same OSUS
-PATCH="{\"spec\":{\"upstream\":\"${POLICY_ENGINE_GRAPH_URI}\"}}"
-oc patch clusterversion version -p $PATCH --type merge
-
-# If upgrade stalls (signatures issue), force upgrade
-oc patch clusterversion version --type json -p '[{"op": "add", "path": "/spec/desiredUpdate/force", "value": true}]'
-```
-
----
-
-✅ At this point, your cluster(s) should be able to upgrade in the same way as connected clusters, but using your **local registry** and **local OSUS**.
 
 ---
 
