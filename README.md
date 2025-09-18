@@ -31,7 +31,7 @@ The high-level process:
 4. **Add router CA to trust bundle** – allows the CVO to talk to OSUS via ingress.  
 5. **Create the OSUS application** – deploys a local “over-the-air” update service.  
 6. **Configure the CVO** – point your cluster at the local OSUS service.  
-7. **Upgrade other clusters using OSUS** – re-use the same update service across multiple disconnected clusters.  
+7. **Upgrade the Cluster** – re-use the same update service across multiple disconnected clusters.  
 
 ---
 
@@ -294,8 +294,7 @@ This patch redirects the CVO to your local OSUS.
 
 ---
 
-## Step 7: Upgrade Other Clusters Using OSUS
-Once OSUS is working, you can point other disconnected clusters to the same service.
+## Step 7: Upgrade the Cluster
 
 ### Initiating the Upgrade from the Web Console
 
