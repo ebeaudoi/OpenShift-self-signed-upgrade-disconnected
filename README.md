@@ -7,6 +7,25 @@ This document walks through the steps needed to set up OSUS and perform upgrades
 
 ---
 
+## Table of Contents
+
+- [Pre-requisites](#pre-requisites)
+- [Workflow Overview](#workflow-overview)
+- [Step 1: Install the Cincinnati Operator](#step-1-install-the-cincinnati-operator)
+- [Step 2: Apply Mirrored Release Image Signatures](#step-2-apply-mirrored-release-image-signatures-release-signatures)
+- [Step 3: Configure Access to a Secured Registry](#step-3-configure-access-to-a-secured-registry)
+- [Step 4: Add Router CA to the User CA Bundle](#step-4-add-router-ca-to-the-user-ca-bundle)
+- [Step 5: Create an OSUS Application](#step-5-create-an-osus-application)
+- [Step 6: Configure the Cluster Version Operator (CVO)](#step-6-configure-the-cluster-version-operator-cvo)
+- [Step 7: Upgrade the Cluster](#step-7-upgrade-the-cluster)
+- [Quick Reference Summary Table](#quick-reference-summary-table)
+- [Happy Path Runbook (Minimal Checklist)](#happy-path-runbook-minimal-checklist)
+- [Upgrade Readiness Validation Script](#upgrade-readiness-validation-script)
+- [OpenShift upgrade troubleshooting](#openshift-upgrade-troubleshooting)
+- [References](#references)
+
+---
+
 ## Pre-requisites
 - Update the operators to the latest versions.
 - Install the **cincinnati-operator** (this operator powers OSUS).
