@@ -394,6 +394,87 @@ oc patch clusterversion version -p $PATCH --type merge
 ```
 ---
 
+## Upgrade Readiness Validation Script
+
+Before initiating an upgrade, you can use the provided validation script to ensure your cluster is fully prepared and all prerequisites are correctly configured.
+
+### Usage
+
+Run the validation script from the project root directory:
+
+```bash
+./validate-upgrade-readiness.sh
+```
+
+The script will:
+
+1. **Prompt for required information:**
+   - Current OpenShift version (source)
+   - Target OpenShift version
+   - Optional: OSUS namespace, application name, and other configuration details
+
+2. **Execute comprehensive validation checks:**
+   - Prerequisites (oc CLI, authentication, cluster access)
+   - Step 1: Cincinnati Operator installation and health
+   - Step 2: Release signatures configuration
+   - Step 3: Registry access configuration
+   - Step 4: Router CA configuration
+   - Step 5: OSUS application deployment
+   - Step 6: CVO configuration
+   - General cluster health (nodes, operators, upgrade path)
+
+3. **Display results:**
+   - Each check shows `[✓ PASS]` (green) or `[✗ FAIL]` (red)
+   - Summary with total checks passed/failed
+   - Final readiness status: **READY TO UPGRADE** or **NOT READY**
+
+### Example Output
+
+```
+================================================================================
+OpenShift Upgrade Readiness Validation
+================================================================================
+
+  oc CLI is installed and accessible                    [✓ PASS]
+  oc CLI version check                                   [✓ PASS]
+  User is authenticated to cluster                      [✓ PASS]
+  Cluster is accessible                                 [✓ PASS]
+
+...
+
+================================================================================
+Validation Summary
+================================================================================
+Total Checks: 25
+Passed: 25
+Failed: 0
+Pass Rate: 100%
+
+================================================================================
+✓ CLUSTER IS READY TO UPGRADE
+================================================================================
+```
+
+### Exit Codes
+
+- **0**: All critical checks passed - cluster is ready to upgrade
+- **1**: Critical checks failed - cluster is not ready (review failures)
+
+### Requirements
+
+- `oc` CLI installed and configured
+- Authenticated to the OpenShift cluster (`oc login`)
+- `jq` command-line JSON processor (for parsing cluster resource data)
+- `base64` utility (for certificate decoding)
+
+### Notes
+
+- The script validates configuration regardless of specific OpenShift versions
+- Failed checks include detailed error messages to help identify issues
+- Non-critical warnings may appear but won't block the "READY" status
+- Refer to the main documentation sections above for remediation steps if checks fail
+
+---
 
 ## OpenShift upgrade troubleshooting
 [OpenShift upgrade troubleshooting command line](OCP-OSUS-troubleshooting-commands.md)
