@@ -68,7 +68,31 @@ parse_arguments() {
 
 debug_cmd() {
     if [[ "$DEBUG" == "true" ]]; then
-        echo -e "${YELLOW}[DEBUG] Executing: $1${NC}" >&2
+        # Format command for better readability
+        local cmd="$1"
+        # Ensure we start on a new line (print_check doesn't add newline)
+        echo "" >&2
+        # Add indentation, visual separator, and formatting
+        # Use a clean format: indented with a visual marker
+        echo -e "${YELLOW}    →${NC} ${YELLOW}$cmd${NC}" >&2
+    fi
+}
+
+print_debug_header() {
+    if [[ "$DEBUG" == "true" ]]; then
+        echo "" >&2
+        echo -e "${YELLOW}═══════════════════════════════════════════════════════════════════════════════${NC}" >&2
+        echo -e "${YELLOW}  DEBUG MODE ENABLED - Commands will be displayed below${NC}" >&2
+        echo -e "${YELLOW}═══════════════════════════════════════════════════════════════════════════════${NC}" >&2
+        echo "" >&2
+    fi
+}
+
+debug_section() {
+    if [[ "$DEBUG" == "true" ]]; then
+        local section_name="$1"
+        echo "" >&2
+        echo -e "${YELLOW}  ═══ [DEBUG]${NC} ${YELLOW}$section_name${NC}" >&2
     fi
 }
 
@@ -344,6 +368,7 @@ collect_inputs() {
 
 validate_prerequisites() {
     print_header "Prerequisites Validation"
+    debug_section "Prerequisites Validation"
     
     # Check oc CLI installation
     print_check "oc CLI is installed and accessible"
@@ -397,6 +422,7 @@ validate_prerequisites() {
 
 validate_cincinnati_operator() {
     print_header "Step 1: Cincinnati Operator Validation"
+    debug_section "Cincinnati Operator Validation"
     
     local step_failed=false
     
@@ -466,6 +492,7 @@ validate_cincinnati_operator() {
 
 validate_release_signatures() {
     print_header "Step 2: Release Signatures Validation"
+    debug_section "Release Signatures Validation"
     
     local step_failed=false
     
@@ -506,6 +533,7 @@ validate_release_signatures() {
 
 validate_registry_access() {
     print_header "Step 3: Registry Access Configuration Validation"
+    debug_section "Registry Access Configuration Validation"
     
     local step_failed=false
     
@@ -593,6 +621,7 @@ validate_registry_access() {
 
 validate_router_ca() {
     print_header "Step 4: Router CA Configuration Validation"
+    debug_section "Router CA Configuration Validation"
     
     local step_failed=false
     
@@ -670,6 +699,7 @@ validate_router_ca() {
 
 validate_osus_application() {
     print_header "Step 5: OSUS Application Validation"
+    debug_section "OSUS Application Validation"
     
     local step_failed=false
     
@@ -706,8 +736,8 @@ validate_osus_application() {
         pod_count=$(oc get pods -n "$OSUS_NAMESPACE" --no-headers 2>/dev/null | grep -c "$deployment_name" || echo "0")
         pod_count=$(echo "$pod_count" | tr -d '\n\r')
         if [[ "$pod_count" -gt 0 ]]; then
-            debug_cmd "oc get pods -n $OSUS_NAMESPACE --no-headers | grep $deployment_name | grep -c 'Running.*1/1\\|Running.*2/2'"
-            ready_pods=$(oc get pods -n "$OSUS_NAMESPACE" --no-headers 2>/dev/null | grep "$deployment_name" | grep -c "Running.*1/1\|Running.*2/2" || echo "0")
+            debug_cmd "oc get pods -n $OSUS_NAMESPACE --no-headers | grep $deployment_name | grep -c '1/1.*Running\\|2/2.*Running'"
+            ready_pods=$(oc get pods -n "$OSUS_NAMESPACE" --no-headers 2>/dev/null | grep "$deployment_name" | grep -c "1/1.*Running\|2/2.*Running" || echo "0")
             ready_pods=$(echo "$ready_pods" | tr -d '\n\r')
             if [[ "$ready_pods" -gt 0 ]]; then
                 print_pass
@@ -764,6 +794,7 @@ validate_osus_application() {
 
 validate_cvo_configuration() {
     print_header "Step 6: CVO Configuration Validation"
+    debug_section "CVO Configuration Validation"
     
     local step_failed=false
     
@@ -866,6 +897,7 @@ validate_cvo_configuration() {
 
 validate_cluster_health() {
     print_header "General Cluster Health Validation"
+    debug_section "Cluster Health Validation"
     
     local step_failed=false
     
@@ -993,6 +1025,9 @@ main() {
     parse_arguments "$@"
     
     collect_inputs
+    
+    # Print debug header if debug mode is enabled
+    print_debug_header
     
     # Run all validations
     validate_prerequisites || true
