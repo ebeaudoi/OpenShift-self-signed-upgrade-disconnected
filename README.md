@@ -315,6 +315,26 @@ This patch redirects the CVO to your local OSUS.
 
 ## Step 7: Upgrade the Cluster
 
+### Update the Cluster Channel
+
+Before initiating the upgrade, ensure the cluster channel is set to match your target OpenShift version. The channel determines which updates are available and recommended.
+
+**What to do:**
+```bash
+# Update the cluster channel to match your target version
+# Example for OpenShift 4.18:
+oc patch clusterversion version --type=merge -p '{"spec": {"channel": "stable-4.18"}}'
+```
+
+**Why:**  
+The cluster channel determines which update paths are available. Setting it to the correct channel (e.g., `stable-4.18` for version 4.18.x) ensures that the CVO can discover and recommend the appropriate upgrades from your OSUS service.
+
+**Verify the channel:**
+```bash
+# Check the current channel setting
+oc get clusterversion version -o jsonpath='{.spec.channel}'
+```
+
 ### Initiating the Upgrade from the Web Console
 
 1.  Log in to the OpenShift web console and navigate to the **Administration** > **Cluster Settings** section.
@@ -333,6 +353,7 @@ This patch redirects the CVO to your local OSUS.
 | 4. Add Router CA | Trust ingress router CA so CVO can reach OSUS | Extract `router-ca` secret → add to `user-ca-bundle` |
 | 5. Create OSUS Application | Deploy local update service | Apply `updateservice.yaml` from `oc-mirror` output |
 | 6. Configure CVO | Point cluster to OSUS instead of api.openshift.com | Patch `clusterversion` with `POLICY_ENGINE_GRAPH_URI` |
+| 7. Upgrade the Cluster | Set cluster channel and initiate upgrade | `oc patch clusterversion version --type=merge -p '{"spec": {"channel": "stable-4.18"}}'` |
 
 ---
 
@@ -411,6 +432,23 @@ PATCH="{\"spec\":{\"upstream\":\"${POLICY_ENGINE_GRAPH_URI}\"}}"
 # Patch the CVO to use the local OpenShift Update Service:
 oc patch clusterversion version -p $PATCH --type merge
 ```
+
+---
+
+### 7. Update Cluster Channel and Initiate Upgrade
+```bash
+# Update the cluster channel to match your target version
+# Example for OpenShift 4.18:
+oc patch clusterversion version --type=merge -p '{"spec": {"channel": "stable-4.18"}}'
+
+# Verify the channel was updated
+oc get clusterversion version -o jsonpath='{.spec.channel}'
+
+# Check available updates
+oc adm upgrade
+```
+
+After setting the channel, you can initiate the upgrade from the web console (Administration > Cluster Settings) or via CLI.
 ---
 
 ## Upgrade Readiness Validation Script
