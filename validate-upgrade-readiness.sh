@@ -30,9 +30,47 @@ OSUS_APP_NAME="update-service-oc-mirror"
 REGISTRY_CA_CM_NAME=""
 RELEASE_SIG_PATH=""
 
+# Debug/Verbose mode flag
+DEBUG=false
+
+################################################################################
+# Command-line Argument Parsing
+################################################################################
+
+parse_arguments() {
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+            --debug|-d)
+                DEBUG=true
+                shift
+                ;;
+            --help|-h)
+                echo "Usage: $0 [OPTIONS]"
+                echo ""
+                echo "Options:"
+                echo "  --debug, -d    Enable debug mode to display executed commands"
+                echo "  --help, -h     Display this help message"
+                echo ""
+                exit 0
+                ;;
+            *)
+                echo "Unknown option: $1"
+                echo "Use --help for usage information"
+                exit 1
+                ;;
+        esac
+    done
+}
+
 ################################################################################
 # Helper Functions
 ################################################################################
+
+debug_cmd() {
+    if [[ "$DEBUG" == "true" ]]; then
+        echo -e "${YELLOW}[DEBUG] Executing: $1${NC}" >&2
+    fi
+}
 
 print_header() {
     echo ""
@@ -79,8 +117,10 @@ check_resource_exists() {
     local namespace="${3:-}"
     
     if [[ -n "$namespace" ]]; then
+        debug_cmd "oc get $resource_type $resource_name -n $namespace"
         oc get "$resource_type" "$resource_name" -n "$namespace" &>/dev/null
     else
+        debug_cmd "oc get $resource_type $resource_name"
         oc get "$resource_type" "$resource_name" &>/dev/null
     fi
 }
@@ -92,8 +132,10 @@ get_jsonpath() {
     local namespace="${4:-}"
     
     if [[ -n "$namespace" ]]; then
+        debug_cmd "oc get $resource_type $resource_name -n $namespace -o jsonpath='$jsonpath'"
         oc get "$resource_type" "$resource_name" -n "$namespace" -o jsonpath="$jsonpath" 2>/dev/null || echo ""
     else
+        debug_cmd "oc get $resource_type $resource_name -o jsonpath='$jsonpath'"
         oc get "$resource_type" "$resource_name" -o jsonpath="$jsonpath" 2>/dev/null || echo ""
     fi
 }
@@ -118,9 +160,11 @@ collect_inputs() {
     echo "Attempting to auto-detect current OpenShift version..."
     if command -v oc &>/dev/null && oc whoami &>/dev/null 2>&1; then
         # Try to get version from clusterversion
+        debug_cmd "oc get clusterversion version -o jsonpath='{.status.desired.version}'"
         detected_version=$(oc get clusterversion version -o jsonpath='{.status.desired.version}' 2>/dev/null || echo "")
         if [[ -z "$detected_version" ]]; then
             # Try alternative method
+            debug_cmd "oc get clusterversion version -o jsonpath='{.status.history[?(@.state==\"Completed\")].version}' | head -n1"
             detected_version=$(oc get clusterversion version -o jsonpath='{.status.history[?(@.state=="Completed")].version}' 2>/dev/null | head -n1 || echo "")
         fi
         if [[ -n "$detected_version" ]]; then
@@ -171,6 +215,15 @@ collect_inputs() {
     fi
     
     read -p "Registry CA ConfigMap name (leave empty to auto-detect): " REGISTRY_CA_CM_NAME
+    
+    # Prompt for debug mode if not already set via command-line flag
+    if [[ "$DEBUG" == "false" ]]; then
+        echo ""
+        read -p "Enable debug mode to display executed commands? (y/N): " debug_input
+        if [[ "${debug_input,,}" == "y" || "${debug_input,,}" == "yes" ]]; then
+            DEBUG=true
+        fi
+    fi
     
     echo ""
     echo "================================================================================"
@@ -313,7 +366,9 @@ validate_prerequisites() {
     
     # Check authentication
     print_check "User is authenticated to cluster"
+    debug_cmd "oc whoami"
     if oc whoami &>/dev/null; then
+        debug_cmd "oc whoami"
         current_user=$(oc whoami)
         print_pass
         echo "    → Authenticated as: $current_user"
@@ -324,8 +379,10 @@ validate_prerequisites() {
     
     # Check cluster access
     print_check "Cluster is accessible"
+    debug_cmd "oc cluster-info"
     if oc cluster-info &>/dev/null; then
         print_pass
+        debug_cmd "oc cluster-info | head -n1 | awk '{print \$NF}'"
         cluster_url=$(oc cluster-info | head -n1 | awk '{print $NF}')
         echo "    → Cluster URL: $cluster_url"
     else
@@ -345,19 +402,22 @@ validate_cincinnati_operator() {
     
     # Check subscription exists
     print_check "Cincinnati operator subscription exists"
-    if check_resource_exists "subscription" "updateservice-operator" "$OSUS_NAMESPACE"; then
+    debug_cmd "oc get subscription cincinnati-operator -n $OSUS_NAMESPACE"
+    if check_resource_exists "subscription" "cincinnati-operator" "$OSUS_NAMESPACE"; then
         print_pass
     else
-        print_fail "Subscription 'updateservice-operator' not found in namespace '$OSUS_NAMESPACE'" true
+        print_fail "Subscription 'cincinnati-operator' not found in namespace '$OSUS_NAMESPACE'" true
         step_failed=true
     fi
     
     # Check CSV exists and is in Succeeded phase
     print_check "Cincinnati operator CSV is installed"
-    csv_name=$(get_jsonpath "csv" "" "{.items[?(@.spec.displayName=='OpenShift Update Service')].metadata.name}" "$OSUS_NAMESPACE" 2>/dev/null || echo "")
+    debug_cmd "oc get csv -n $OSUS_NAMESPACE -o json | jq -r '.items[] | select(.spec.displayName==\"OpenShift Update Service\") | .metadata.name' | head -n1"
+    csv_name=$(oc get csv -n "$OSUS_NAMESPACE" -o json 2>/dev/null | jq -r '.items[] | select(.spec.displayName=="OpenShift Update Service") | .metadata.name' | head -n1 || echo "")
     if [[ -z "$csv_name" ]]; then
-        # Try alternative method
-        csv_name=$(oc get csv -n "$OSUS_NAMESPACE" -o json 2>/dev/null | jq -r '.items[] | select(.metadata.name | contains("updateservice")) | .metadata.name' | head -n1 || echo "")
+        # Try alternative method - look for update-service-operator CSV (any version)
+        debug_cmd "oc get csv -n $OSUS_NAMESPACE -o json | jq -r '.items[] | select(.metadata.name | startswith(\"update-service-operator\")) | .metadata.name' | head -n1"
+        csv_name=$(oc get csv -n "$OSUS_NAMESPACE" -o json 2>/dev/null | jq -r '.items[] | select(.metadata.name | startswith("update-service-operator")) | .metadata.name' | head -n1 || echo "")
     fi
     
     if [[ -n "$csv_name" ]]; then
@@ -376,9 +436,13 @@ validate_cincinnati_operator() {
     
     # Check operator pods
     print_check "Cincinnati operator pods are running"
+    debug_cmd "oc get pods -n $OSUS_NAMESPACE --selector name=updateservice-operator --no-headers | wc -l"
     pod_count=$(oc get pods -n "$OSUS_NAMESPACE" --selector name=updateservice-operator --no-headers 2>/dev/null | wc -l || echo "0")
+    pod_count=$(echo "$pod_count" | tr -d '\n\r')
     if [[ "$pod_count" -gt 0 ]]; then
+        debug_cmd "oc get pods -n $OSUS_NAMESPACE --selector name=updateservice-operator --no-headers | grep -c Running"
         running_pods=$(oc get pods -n "$OSUS_NAMESPACE" --selector name=updateservice-operator --no-headers 2>/dev/null | grep -c "Running" || echo "0")
+        running_pods=$(echo "$running_pods" | tr -d '\n\r')
         if [[ "$running_pods" -gt 0 ]]; then
             print_pass
             echo "    → Found $running_pods running pod(s)"
@@ -417,7 +481,8 @@ validate_release_signatures() {
     # Check ConfigMap contains signature data
     print_check "Release signatures ConfigMap contains data"
     if check_resource_exists "configmap" "mirrored-release-signatures" "openshift-config-managed"; then
-        data_keys=$(get_jsonpath "configmap" "mirrored-release-signatures" "{.data}" "openshift-config-managed" | jq -r 'keys | length' 2>/dev/null || echo "0")
+        debug_cmd "oc get configmap mirrored-release-signatures -n openshift-config-managed -o json | jq -r '.binaryData // {} | keys | length'"
+        data_keys=$(get_jsonpath "configmap" "mirrored-release-signatures" "{.binaryData}" "openshift-config-managed" | jq -r 'keys | length' 2>/dev/null || echo "0")
         if [[ "$data_keys" -gt 0 ]]; then
             print_pass
             echo "    → ConfigMap contains $data_keys signature key(s)"
@@ -547,17 +612,22 @@ validate_router_ca() {
         router_cert=$(get_jsonpath "secret" "router-ca" "{.data.tls\\.crt}" "openshift-ingress-operator" | base64 -d 2>/dev/null || echo "")
         if [[ -n "$router_cert" ]]; then
             # Check if user-ca-bundle contains router CA
+            debug_cmd "oc get configmap user-ca-bundle -n openshift-config -o json"
             user_ca_bundle=$(oc get configmap user-ca-bundle -n openshift-config -o json 2>/dev/null || echo "{}")
-            # Extract certificate from router CA (first cert in chain)
-            router_cert_clean=$(echo "$router_cert" | sed -n '/BEGIN CERTIFICATE/,/END CERTIFICATE/p' | head -n -1 | tail -n +2 | tr -d '\n')
+            # Extract certificate from router CA (first cert in chain) - remove all whitespace for comparison
+            router_cert_clean=$(echo "$router_cert" | sed -n '/BEGIN CERTIFICATE/,/END CERTIFICATE/p' | head -n -1 | tail -n +2 | tr -d '\n' | tr -d '[:space:]')
             
             # Check if any key in user-ca-bundle contains the router cert
+            # Use bracket notation to handle keys with special characters (e.g., ca-bundle.crt)
             found=false
             for key in $(echo "$user_ca_bundle" | jq -r '.data // {} | keys[]' 2>/dev/null || echo ""); do
-                cert_data=$(echo "$user_ca_bundle" | jq -r ".data.$key" 2>/dev/null || echo "")
+                # Use bracket notation to properly access keys with special characters
+                debug_cmd "jq -r --arg k \"$key\" '.data[\$k]' (from user-ca-bundle)"
+                cert_data=$(echo "$user_ca_bundle" | jq -r --arg k "$key" '.data[$k] // ""' 2>/dev/null || echo "")
                 if [[ -n "$cert_data" ]] && echo "$cert_data" | grep -q "BEGIN CERTIFICATE"; then
-                    cert_clean=$(echo "$cert_data" | sed -n '/BEGIN CERTIFICATE/,/END CERTIFICATE/p' | head -n -1 | tail -n +2 | tr -d '\n')
-                    if [[ "$cert_clean" == "$router_cert_clean" ]]; then
+                    # Remove all whitespace from cert_data and check if router cert is contained
+                    cert_data_clean=$(echo "$cert_data" | tr -d '[:space:]')
+                    if [[ "$cert_data_clean" == *"$router_cert_clean"* ]]; then
                         found=true
                         break
                     fi
@@ -615,13 +685,30 @@ validate_osus_application() {
     # Check OSUS pods are running
     print_check "OSUS pods are running and ready"
     if check_resource_exists "updateservice" "$OSUS_APP_NAME" "$OSUS_NAMESPACE"; then
-        # Get deployment name from UpdateService
-        deployment_name=$(get_jsonpath "updateservice" "$OSUS_APP_NAME" "{.status.deploymentName}" "$OSUS_NAMESPACE" || echo "$OSUS_APP_NAME")
+        # Get deployment name - try to find deployment owned by UpdateService, or use UpdateService name as pattern
+        debug_cmd "oc get deployments -n $OSUS_NAMESPACE -o json | jq -r '.items[] | select(.metadata.ownerReferences[]?.name==\"$OSUS_APP_NAME\") | .metadata.name' | head -n1"
+        deployment_name=$(oc get deployments -n "$OSUS_NAMESPACE" -o json 2>/dev/null | jq -r --arg us_name "$OSUS_APP_NAME" '.items[] | select(.metadata.ownerReferences[]?.name==$us_name) | .metadata.name' 2>/dev/null | head -n1 || echo "")
+        
+        # If no deployment found via ownerReference, try to find by name pattern or use UpdateService name
+        if [[ -z "$deployment_name" ]]; then
+            # Try to find deployment with name matching UpdateService pattern
+            debug_cmd "oc get deployments -n $OSUS_NAMESPACE -o json | jq -r '.items[] | select(.metadata.name | contains(\"$OSUS_APP_NAME\")) | .metadata.name' | head -n1"
+            deployment_name=$(oc get deployments -n "$OSUS_NAMESPACE" -o json 2>/dev/null | jq -r --arg us_name "$OSUS_APP_NAME" '.items[] | select(.metadata.name | contains($us_name)) | .metadata.name' 2>/dev/null | head -n1 || echo "")
+        fi
+        
+        # Fallback to UpdateService name if still not found
+        if [[ -z "$deployment_name" ]]; then
+            deployment_name="$OSUS_APP_NAME"
+        fi
         
         # Check pods
+        debug_cmd "oc get pods -n $OSUS_NAMESPACE --no-headers | grep -c $deployment_name"
         pod_count=$(oc get pods -n "$OSUS_NAMESPACE" --no-headers 2>/dev/null | grep -c "$deployment_name" || echo "0")
+        pod_count=$(echo "$pod_count" | tr -d '\n\r')
         if [[ "$pod_count" -gt 0 ]]; then
+            debug_cmd "oc get pods -n $OSUS_NAMESPACE --no-headers | grep $deployment_name | grep -c 'Running.*1/1\\|Running.*2/2'"
             ready_pods=$(oc get pods -n "$OSUS_NAMESPACE" --no-headers 2>/dev/null | grep "$deployment_name" | grep -c "Running.*1/1\|Running.*2/2" || echo "0")
+            ready_pods=$(echo "$ready_pods" | tr -d '\n\r')
             if [[ "$ready_pods" -gt 0 ]]; then
                 print_pass
                 echo "    → Found $ready_pods ready pod(s) out of $pod_count total"
@@ -640,7 +727,9 @@ validate_osus_application() {
     
     # Check OSUS route exists
     print_check "OSUS route exists"
+    debug_cmd "oc get routes -n $OSUS_NAMESPACE --no-headers | wc -l"
     route_count=$(oc get routes -n "$OSUS_NAMESPACE" --no-headers 2>/dev/null | wc -l || echo "0")
+    route_count=$(echo "$route_count" | tr -d '\n\r')
     if [[ "$route_count" -gt 0 ]]; then
         print_pass
         echo "    → Found $route_count route(s)"
@@ -720,9 +809,13 @@ validate_cvo_configuration() {
     
     # Check CVO pods are running
     print_check "CVO pods are running and healthy"
+    debug_cmd "oc get pods -n openshift-cluster-version --no-headers | grep cluster-version-operator | wc -l"
     cvo_pods=$(oc get pods -n openshift-cluster-version --no-headers 2>/dev/null | grep "cluster-version-operator" | wc -l || echo "0")
+    cvo_pods=$(echo "$cvo_pods" | tr -d '\n\r')
     if [[ "$cvo_pods" -gt 0 ]]; then
+        debug_cmd "oc get pods -n openshift-cluster-version --no-headers | grep cluster-version-operator | grep -c Running"
         running_cvo_pods=$(oc get pods -n openshift-cluster-version --no-headers 2>/dev/null | grep "cluster-version-operator" | grep -c "Running" || echo "0")
+        running_cvo_pods=$(echo "$running_cvo_pods" | tr -d '\n\r')
         if [[ "$running_cvo_pods" -gt 0 ]]; then
             print_pass
             echo "    → Found $running_cvo_pods running CVO pod(s)"
@@ -737,14 +830,19 @@ validate_cvo_configuration() {
     
     # Check CVO can retrieve available updates
     print_check "CVO can retrieve available updates"
+    debug_cmd "oc adm upgrade"
     if oc adm upgrade &>/dev/null; then
+        debug_cmd "oc adm upgrade | grep -c $TARGET_VERSION"
         available_updates=$(oc adm upgrade 2>/dev/null | grep -c "$TARGET_VERSION" || echo "0")
+        available_updates=$(echo "$available_updates" | tr -d '\n\r')
         if [[ "$available_updates" -gt 0 ]]; then
             print_pass
             echo "    → Target version $TARGET_VERSION is available"
         else
             # Check if any updates are available at all
+            debug_cmd "oc adm upgrade | grep -E '^[0-9]+\\.[0-9]+\\.[0-9]+' | wc -l"
             update_count=$(oc adm upgrade 2>/dev/null | grep -E "^[0-9]+\.[0-9]+\.[0-9]+" | wc -l || echo "0")
+            update_count=$(echo "$update_count" | tr -d '\n\r')
             if [[ "$update_count" -gt 0 ]]; then
                 print_warning "Updates available but target version $TARGET_VERSION not found in list"
             else
@@ -773,8 +871,12 @@ validate_cluster_health() {
     
     # Check all nodes are Ready
     print_check "All nodes are in Ready state"
+    debug_cmd "oc get nodes --no-headers | wc -l"
     total_nodes=$(oc get nodes --no-headers 2>/dev/null | wc -l || echo "0")
+    total_nodes=$(echo "$total_nodes" | tr -d '\n\r')
+    debug_cmd "oc get nodes --no-headers | grep -c ' Ready '"
     ready_nodes=$(oc get nodes --no-headers 2>/dev/null | grep -c " Ready " || echo "0")
+    ready_nodes=$(echo "$ready_nodes" | tr -d '\n\r')
     if [[ "$total_nodes" -gt 0 ]] && [[ "$ready_nodes" == "$total_nodes" ]]; then
         print_pass
         echo "    → $ready_nodes/$total_nodes nodes Ready"
@@ -785,7 +887,9 @@ validate_cluster_health() {
     
     # Check critical cluster operators are not degraded
     print_check "Critical cluster operators are not degraded"
+    debug_cmd "oc get clusteroperators --no-headers | grep -v 'True.*False.*False' | grep -c True"
     degraded_operators=$(oc get clusteroperators --no-headers 2>/dev/null | grep -v "True.*False.*False" | grep -c "True" || echo "0")
+    degraded_operators=$(echo "$degraded_operators" | tr -d '\n\r')
     if [[ "$degraded_operators" -eq 0 ]]; then
         print_pass
     else
@@ -796,7 +900,9 @@ validate_cluster_health() {
     
     # Check cluster version status shows no blocking conditions
     print_check "Cluster version status shows no blocking conditions"
+    debug_cmd "oc get clusterversion version -o json | jq -r '.status.conditions[] | select(.status==\"True\" and (.type==\"Failing\" or .type==\"Invalid\" or .type==\"Error\")) | .type' | wc -l"
     blocking_conditions=$(oc get clusterversion version -o json 2>/dev/null | jq -r '.status.conditions[] | select(.status=="True" and (.type=="Failing" or .type=="Invalid" or .type=="Error")) | .type' 2>/dev/null | wc -l || echo "0")
+    blocking_conditions=$(echo "$blocking_conditions" | tr -d '\n\r')
     if [[ "$blocking_conditions" -eq 0 ]]; then
         print_pass
     else
@@ -807,7 +913,9 @@ validate_cluster_health() {
     
     # Check upgrade path is available
     print_check "Upgrade path to target version is available"
+    debug_cmd "oc adm upgrade"
     if oc adm upgrade &>/dev/null; then
+        debug_cmd "oc adm upgrade | grep -q $TARGET_VERSION"
         if oc adm upgrade 2>/dev/null | grep -q "$TARGET_VERSION"; then
             print_pass
             echo "    → Version $TARGET_VERSION is available for upgrade"
@@ -881,6 +989,9 @@ print_summary() {
 ################################################################################
 
 main() {
+    # Parse command-line arguments
+    parse_arguments "$@"
+    
     collect_inputs
     
     # Run all validations
