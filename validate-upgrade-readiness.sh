@@ -960,6 +960,76 @@ validate_cluster_health() {
         step_failed=true
     fi
     
+    # Check for pods that are not running
+    print_check "All pods are in Running state"
+    debug_cmd "oc get pods --all-namespaces --field-selector=status.phase!=Running --no-headers"
+    # Get pods that are not Running, excluding Completed and Succeeded (which are normal terminal states)
+    not_running_pods=$(oc get pods --all-namespaces --field-selector=status.phase!=Running --no-headers 2>/dev/null | grep -vE "(Completed|Succeeded)" || echo "")
+    if [[ -z "$not_running_pods" ]]; then
+        print_pass
+    else
+        print_fail "Some pods are not running" true
+        echo "    → Non-running pods (excluding Completed/Succeeded):"
+        echo "$not_running_pods" | while IFS= read -r line; do
+            if [[ -n "$line" ]]; then
+                namespace=$(echo "$line" | awk '{print $1}')
+                pod_name=$(echo "$line" | awk '{print $2}')
+                status=$(echo "$line" | awk '{print $4}')
+                restarts=$(echo "$line" | awk '{print $5}')
+                echo "      $namespace/$pod_name: Status=$status, Restarts=$restarts"
+            fi
+        done
+        step_failed=true
+    fi
+    
+    # Check for PVCs that are not bound
+    print_check "All PVCs are in Bound state"
+    debug_cmd "oc get pvc --all-namespaces --no-headers"
+    # Get all PVCs and filter for those not in Bound state
+    not_bound_pvcs=$(oc get pvc --all-namespaces --no-headers 2>/dev/null | awk '$3 != "Bound" {print}' || echo "")
+    if [[ -z "$not_bound_pvcs" ]]; then
+        print_pass
+    else
+        print_fail "Some PVCs are not bound" true
+        echo "    → Non-bound PVCs:"
+        echo "$not_bound_pvcs" | while IFS= read -r line; do
+            if [[ -n "$line" ]]; then
+                namespace=$(echo "$line" | awk '{print $1}')
+                pvc_name=$(echo "$line" | awk '{print $2}')
+                status=$(echo "$line" | awk '{print $3}')
+                echo "      $namespace/$pvc_name: $status"
+            fi
+        done
+        step_failed=true
+    fi
+    
+    # Check MachineConfigPool status
+    print_check "All MachineConfigPools are updated and not degraded"
+    debug_cmd "oc get machineconfigpool --no-headers"
+    # Check for MCPs that are not updated, are updating, or are degraded
+    # Format: NAME   CONFIG   UPDATED   UPDATING   DEGRADED   MACHINECOUNT   READYMACHINECOUNT   ...
+    mcp_problematic=$(oc get machineconfigpool --no-headers 2>/dev/null | awk '$3 != "True" || $4 == "True" || $5 == "True" {print}' || echo "")
+    if [[ -z "$mcp_problematic" ]]; then
+        print_pass
+    else
+        print_fail "Some MachineConfigPools are not ready" true
+        echo "    → Problematic MachineConfigPools:"
+        echo "$mcp_problematic" | while IFS= read -r line; do
+            if [[ -n "$line" ]]; then
+                mcp_name=$(echo "$line" | awk '{print $1}')
+                updated=$(echo "$line" | awk '{print $3}')
+                updating=$(echo "$line" | awk '{print $4}')
+                degraded=$(echo "$line" | awk '{print $5}')
+                issues=""
+                [[ "$updated" != "True" ]] && issues="${issues}Not Updated "
+                [[ "$updating" == "True" ]] && issues="${issues}Updating "
+                [[ "$degraded" == "True" ]] && issues="${issues}Degraded "
+                echo "      $mcp_name: ${issues}"
+            fi
+        done
+        step_failed=true
+    fi
+    
     if [[ "$step_failed" == "true" ]]; then
         return 1
     fi
