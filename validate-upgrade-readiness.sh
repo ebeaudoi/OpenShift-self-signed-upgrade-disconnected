@@ -522,6 +522,121 @@ validate_release_signatures() {
         step_failed=true
     fi
     
+    # Verify release signatures match target release image
+    if [[ -n "$TARGET_VERSION" ]] && check_resource_exists "configmap" "mirrored-release-signatures" "openshift-config-managed"; then
+        print_check "Release signatures match target release image"
+        
+        # Initialize signature_keys variable
+        local signature_keys=""
+        
+        # Get mirror registry from IDMS (reuse logic from Step 3.5)
+        debug_cmd "oc get idms --all-namespaces -o json"
+        idms_list=$(oc get idms --all-namespaces -o json 2>/dev/null || echo "{}")
+        mirror_registry=$(echo "$idms_list" | jq -r '.items[] | .spec.imageDigestMirrors[]? | select(.source=="quay.io/openshift-release-dev/ocp-release") | .mirrors[0]' 2>/dev/null | head -n1 || echo "")
+        
+        if [[ -z "$mirror_registry" ]]; then
+            print_fail "Cannot verify signature-image match: IDMS mirror registry not found" true
+            echo "    → IDMS configuration required to locate target release image"
+            echo "    → Create an ImageDigestMirrorSet with source: quay.io/openshift-release-dev/ocp-release"
+            step_failed=true
+        else
+            # Construct target release image path
+            target_release_image="${mirror_registry}:${TARGET_VERSION}-x86_64"
+            debug_cmd "oc adm release info $target_release_image --output jsonpath='{.digest}'"
+            
+            # Get image digest using oc adm release info
+            image_digest=$(oc adm release info "$target_release_image" --output jsonpath='{.digest}' 2>/dev/null || echo "")
+            
+            if [[ -z "$image_digest" ]]; then
+                print_fail "Cannot verify signature-image match: Target release image not accessible" true
+                echo "    → Image: $target_release_image"
+                echo "    → Verify registry access and image availability"
+                echo "    → Ensure the target release image was mirrored using oc-mirror"
+                step_failed=true
+            else
+                # Extract SHA-256 hash from digest (remove sha256: prefix if present)
+                # Format: sha256:0bf2e8c1...e14c38 -> 0bf2e8c1...e14c38
+                digest_hash=$(echo "$image_digest" | sed 's/^sha256://' || echo "$image_digest")
+                
+                # Cross-reference signature keys with image digest
+                match_found=false
+                matching_key=""
+                
+                # Get signature keys from ConfigMap
+                signature_keys=$(get_jsonpath "configmap" "mirrored-release-signatures" "{.binaryData}" "openshift-config-managed" | jq -r 'keys[]' 2>/dev/null || echo "")
+                
+                # Check each signature key for digest match
+                # Key format: sha256-{digest}-{version} (e.g., sha256-0bf2e8c1...e14c38-1)
+                while IFS= read -r key; do
+                    if [[ -n "$key" ]]; then
+                        # Extract SHA-256 digest from key by:
+                        # 1. Remove sha256- prefix
+                        # 2. Remove trailing version/index identifier (e.g., -1, -2, etc.)
+                        # This handles format: sha256-{digest}-{version}
+                        
+                        # Remove sha256- prefix
+                        key_without_prefix=$(echo "$key" | sed 's/^sha256-//' || echo "$key")
+                        
+                        # Remove trailing -{number} suffix (version/index identifier)
+                        # Pattern: -{one or more digits} at the end
+                        key_digest=$(echo "$key_without_prefix" | sed -E 's/-[0-9]+$//' || echo "$key_without_prefix")
+                        
+                        # Match the SHA-256 portion exactly
+                        if [[ -n "$key_digest" ]] && [[ "$digest_hash" == "$key_digest" ]]; then
+                            match_found=true
+                            matching_key="$key"
+                            break
+                        fi
+                    fi
+                done <<< "$signature_keys"
+                
+                # Try oc adm release verify as primary verification method
+                if command -v oc &>/dev/null && oc adm release verify --help &>/dev/null 2>&1; then
+                    debug_cmd "oc adm release verify $target_release_image"
+                    if oc adm release verify "$target_release_image" &>/dev/null 2>&1; then
+                        print_pass
+                        echo "    → Release image verified against signatures: $target_release_image"
+                        echo "    → Image digest: $image_digest"
+                        if [[ -n "$matching_key" ]]; then
+                            echo "    → Matching signature key: $matching_key"
+                        fi
+                    else
+                        # If verify fails, check if we found a digest match
+                        if [[ "$match_found" == "true" ]]; then
+                            print_pass
+                            echo "    → Signature key matches image digest: $matching_key"
+                            echo "    → Image digest: $image_digest"
+                            echo "    → Note: oc adm release verify failed, but digest match found"
+                        else
+                            print_fail "Release image verification failed - signatures may not match target image" true
+                            echo "    → Image: $target_release_image"
+                            echo "    → Image digest: $image_digest"
+                            echo "    → No matching signature key found for this digest"
+                            echo "    → Ensure release signatures for version $TARGET_VERSION are correctly applied"
+                            step_failed=true
+                        fi
+                    fi
+                else
+                    # Fallback to digest matching if oc adm release verify not available
+                    if [[ "$match_found" == "true" ]]; then
+                        print_pass
+                        echo "    → Signature key matches image digest: $matching_key"
+                        echo "    → Image digest: $image_digest"
+                        echo "    → Note: Using digest matching (oc adm release verify not available)"
+                    else
+                        print_fail "Could not verify signature-image match via digest" true
+                        echo "    → Image: $target_release_image"
+                        echo "    → Image digest: $image_digest"
+                        echo "    → No matching signature key found for this digest"
+                        echo "    → Ensure release signatures for version $TARGET_VERSION are correctly applied"
+                        echo "    → Signature keys may use different format or signatures may not match"
+                        step_failed=true
+                    fi
+                fi
+            fi
+        fi
+    fi
+    
     if [[ "$step_failed" == "true" ]]; then
         return 1
     fi
@@ -608,6 +723,89 @@ validate_registry_access() {
     else
         print_fail "Cannot verify - registry CA ConfigMap not found"
         step_failed=true
+    fi
+    
+    if [[ "$step_failed" == "true" ]]; then
+        return 1
+    fi
+}
+
+################################################################################
+# Step 3.5: Target Release Image Validation
+################################################################################
+
+validate_target_release_in_registry() {
+    print_header "Step 3.5: Target Release Image Validation"
+    debug_section "Target Release Image Validation"
+    
+    local step_failed=false
+    
+    # Check if TARGET_VERSION is set
+    if [[ -z "$TARGET_VERSION" ]]; then
+        print_fail "Target version not set, cannot validate release image" true
+        step_failed=true
+        return 1
+    fi
+    
+    # Step 1: Find IDMS configuration for ocp-release
+    print_check "IDMS configuration for ocp-release found"
+    debug_cmd "oc get idms --all-namespaces -o json"
+    idms_list=$(oc get idms --all-namespaces -o json 2>/dev/null || echo "{}")
+    
+    if [[ "$idms_list" == "{}" ]] || [[ -z "$idms_list" ]]; then
+        print_fail "No ImageDigestMirrorSet resources found" true
+        echo "    → IDMS configuration is required for disconnected registry access"
+        step_failed=true
+    else
+        # Search for IDMS with source matching quay.io/openshift-release-dev/ocp-release
+        debug_cmd "jq -r '.items[] | select(.spec.imageDigestMirrors[].source==\"quay.io/openshift-release-dev/ocp-release\") | .metadata.name' (from IDMS list)"
+        matching_idms=$(echo "$idms_list" | jq -r '.items[] | select(.spec.imageDigestMirrors[]?.source=="quay.io/openshift-release-dev/ocp-release") | .metadata.name' 2>/dev/null | head -n1 || echo "")
+        
+        if [[ -z "$matching_idms" ]]; then
+            print_fail "No IDMS found mapping quay.io/openshift-release-dev/ocp-release to private registry" true
+            echo "    → Create an ImageDigestMirrorSet with source: quay.io/openshift-release-dev/ocp-release"
+            step_failed=true
+        else
+            print_pass
+            echo "    → Found IDMS: $matching_idms"
+            
+            # Step 2: Extract mirror registry path(s)
+            print_check "Mirror registry path extracted from IDMS"
+            debug_cmd "jq -r '.items[] | select(.spec.imageDigestMirrors[].source==\"quay.io/openshift-release-dev/ocp-release\") | .spec.imageDigestMirrors[] | select(.source==\"quay.io/openshift-release-dev/ocp-release\") | .mirrors[0]' (from IDMS list)"
+            # Extract mirror registry - handle nested structure properly
+            mirror_registry=$(echo "$idms_list" | jq -r '.items[] | .spec.imageDigestMirrors[]? | select(.source=="quay.io/openshift-release-dev/ocp-release") | .mirrors[0]' 2>/dev/null | head -n1 || echo "")
+            
+            if [[ -z "$mirror_registry" ]]; then
+                print_fail "Could not extract mirror registry path from IDMS" true
+                step_failed=true
+            else
+                print_pass
+                echo "    → Mirror registry: $mirror_registry"
+                
+                # Step 3: Verify target release image exists in private registry
+                print_check "Target release image exists in private registry"
+                # Construct target image path: mirror_registry:TARGET_VERSION-x86_64
+                target_image="${mirror_registry}:${TARGET_VERSION}-x86_64"
+                debug_cmd "oc image info $target_image"
+                
+                if oc image info "$target_image" &>/dev/null; then
+                    print_pass
+                    echo "    → Target release image found: $target_image"
+                    
+                    # Try to get additional info about the image
+                    image_digest=$(oc image info "$target_image" --output jsonpath='{.digest}' 2>/dev/null || echo "")
+                    if [[ -n "$image_digest" ]]; then
+                        echo "    → Image digest: $image_digest"
+                    fi
+                else
+                    print_fail "Target release image not found in private registry" true
+                    echo "    → Expected image: $target_image"
+                    echo "    → Verify the image was mirrored using oc-mirror"
+                    echo "    → Check registry access and authentication"
+                    step_failed=true
+                fi
+            fi
+        fi
     fi
     
     if [[ "$step_failed" == "true" ]]; then
@@ -764,7 +962,9 @@ validate_osus_application() {
         print_pass
         echo "    → Found $route_count route(s)"
     else
-        print_warning "No routes found in namespace '$OSUS_NAMESPACE' (may be using NodePort/LoadBalancer)"
+        print_fail "No routes found in namespace '$OSUS_NAMESPACE'" true
+        echo "    → OSUS may be using NodePort/LoadBalancer, but route is expected for CVO access"
+        step_failed=true
     fi
     
     # Check OSUS has valid policyEngineURI
@@ -826,12 +1026,16 @@ validate_cvo_configuration() {
             if [[ "$cvo_base" == "$policy_base" ]] || [[ "$cvo_upstream" == *"$policy_base"* ]]; then
                 print_pass
             else
-                print_warning "CVO upstream may not match OSUS policy engine URI exactly"
+                print_fail "CVO upstream does not match OSUS policy engine URI" true
                 echo "    → CVO: $cvo_upstream"
                 echo "    → OSUS: $policy_engine_uri"
+                echo "    → CVO must be configured to use the OSUS policy engine URI"
+                step_failed=true
             fi
         else
-            print_warning "Cannot verify match - OSUS policyEngineURI not available"
+            print_fail "Cannot verify match - OSUS policyEngineURI not available" true
+            echo "    → OSUS UpdateService status.policyEngineURI is required for verification"
+            step_failed=true
         fi
     else
         print_fail "Cannot verify - CVO upstream not configured"
@@ -875,7 +1079,10 @@ validate_cvo_configuration() {
             update_count=$(oc adm upgrade 2>/dev/null | grep -E "^[0-9]+\.[0-9]+\.[0-9]+" | wc -l || echo "0")
             update_count=$(echo "$update_count" | tr -d '\n\r')
             if [[ "$update_count" -gt 0 ]]; then
-                print_warning "Updates available but target version $TARGET_VERSION not found in list"
+                print_fail "Updates available but target version $TARGET_VERSION not found in list" true
+                echo "    → Target version $TARGET_VERSION is not available for upgrade"
+                echo "    → Verify the target version was mirrored and is accessible"
+                step_failed=true
             else
                 print_fail "CVO cannot retrieve available updates" true
                 step_failed=true
@@ -952,8 +1159,10 @@ validate_cluster_health() {
             print_pass
             echo "    → Version $TARGET_VERSION is available for upgrade"
         else
-            print_warning "Target version $TARGET_VERSION not found in available upgrades"
+            print_fail "Target version $TARGET_VERSION not found in available upgrades" true
             echo "    → Run 'oc adm upgrade' to see available versions"
+            echo "    → Verify the target version was mirrored and OSUS is configured correctly"
+            step_failed=true
         fi
     else
         print_fail "Cannot check upgrade availability" true
@@ -1104,6 +1313,7 @@ main() {
     validate_cincinnati_operator || true
     validate_release_signatures || true
     validate_registry_access || true
+    validate_target_release_in_registry || true
     validate_router_ca || true
     validate_osus_application || true
     validate_cvo_configuration || true
