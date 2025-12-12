@@ -119,12 +119,32 @@ print_fail() {
     local critical="${2:-false}"
     echo -e "${RED}[✗ FAIL]${NC}"
     if [[ -n "$message" ]]; then
-        echo -e "    ${RED}→ $message${NC}"
+        echo -e "    ${RED}✗${NC} ${RED}$message${NC}"
     fi
     ((FAILED++))
     if [[ "$critical" == "true" ]]; then
         ((CRITICAL_FAILURES++))
     fi
+}
+
+print_info() {
+    local message="$1"
+    local color="${2:-}"
+    if [[ -z "$color" ]]; then
+        echo -e "    ${NC}→${NC} $message"
+    else
+        echo -e "    ${color}→${NC} ${color}$message${NC}"
+    fi
+}
+
+print_info_success() {
+    local message="$1"
+    echo -e "    ${GREEN}✓${NC} $message"
+}
+
+print_info_error() {
+    local message="$1"
+    echo -e "    ${RED}✗${NC} ${RED}$message${NC}"
 }
 
 print_warning() {
@@ -384,7 +404,7 @@ validate_prerequisites() {
     oc_version=$(oc version --client -o json 2>/dev/null | grep -oP '"gitVersion":\s*"\K[^"]+' || echo "")
     if [[ -n "$oc_version" ]]; then
         print_pass
-        echo "    → oc version: $oc_version"
+        print_info_success "oc version: $oc_version"
     else
         print_fail "Could not determine oc CLI version"
     fi
@@ -396,7 +416,7 @@ validate_prerequisites() {
         debug_cmd "oc whoami"
         current_user=$(oc whoami)
         print_pass
-        echo "    → Authenticated as: $current_user"
+        print_info_success "Authenticated as: $current_user"
     else
         print_fail "Not authenticated to cluster. Run 'oc login'" true
         return 1
@@ -409,7 +429,7 @@ validate_prerequisites() {
         print_pass
         debug_cmd "oc cluster-info | head -n1 | awk '{print \$NF}'"
         cluster_url=$(oc cluster-info | head -n1 | awk '{print $NF}')
-        echo "    → Cluster URL: $cluster_url"
+        print_info_success "Cluster URL: $cluster_url"
     else
         print_fail "Cannot access cluster" true
         return 1
@@ -450,7 +470,7 @@ validate_cincinnati_operator() {
         csv_phase=$(get_jsonpath "csv" "$csv_name" "{.status.phase}" "$OSUS_NAMESPACE")
         if [[ "$csv_phase" == "Succeeded" ]]; then
             print_pass
-            echo "    → CSV: $csv_name (Phase: $csv_phase)"
+            print_info_success "CSV: $csv_name (Phase: $csv_phase)"
         else
             print_fail "CSV '$csv_name' is not in Succeeded phase (current: $csv_phase)" true
             step_failed=true
@@ -471,7 +491,7 @@ validate_cincinnati_operator() {
         running_pods=$(echo "$running_pods" | tr -d '\n\r')
         if [[ "$running_pods" -gt 0 ]]; then
             print_pass
-            echo "    → Found $running_pods running pod(s)"
+            print_info_success "Found $running_pods running pod(s)"
         else
             print_fail "Operator pods exist but not all are Running" true
             step_failed=true
@@ -512,7 +532,7 @@ validate_release_signatures() {
         data_keys=$(get_jsonpath "configmap" "mirrored-release-signatures" "{.binaryData}" "openshift-config-managed" | jq -r 'keys | length' 2>/dev/null || echo "0")
         if [[ "$data_keys" -gt 0 ]]; then
             print_pass
-            echo "    → ConfigMap contains $data_keys signature key(s)"
+            print_info_success "ConfigMap contains $data_keys signature key(s)"
         else
             print_fail "ConfigMap exists but contains no signature data" true
             step_failed=true
@@ -536,8 +556,8 @@ validate_release_signatures() {
         
         if [[ -z "$mirror_registry" ]]; then
             print_fail "Cannot verify signature-image match: IDMS mirror registry not found" true
-            echo "    → IDMS configuration required to locate target release image"
-            echo "    → Create an ImageDigestMirrorSet with source: quay.io/openshift-release-dev/ocp-release"
+            print_info_error "IDMS configuration required to locate target release image"
+            print_info "Create an ImageDigestMirrorSet with source: quay.io/openshift-release-dev/ocp-release"
             step_failed=true
         else
             # Construct target release image path
@@ -549,9 +569,9 @@ validate_release_signatures() {
             
             if [[ -z "$image_digest" ]]; then
                 print_fail "Cannot verify signature-image match: Target release image not accessible" true
-                echo "    → Image: $target_release_image"
-                echo "    → Verify registry access and image availability"
-                echo "    → Ensure the target release image was mirrored using oc-mirror"
+                print_info_error "Image: $target_release_image"
+                print_info "Verify registry access and image availability"
+                print_info "Ensure the target release image was mirrored using oc-mirror"
                 step_failed=true
             else
                 # Extract SHA-256 hash from digest (remove sha256: prefix if present)
@@ -590,48 +610,19 @@ validate_release_signatures() {
                     fi
                 done <<< "$signature_keys"
                 
-                # Try oc adm release verify as primary verification method
-                if command -v oc &>/dev/null && oc adm release verify --help &>/dev/null 2>&1; then
-                    debug_cmd "oc adm release verify $target_release_image"
-                    if oc adm release verify "$target_release_image" &>/dev/null 2>&1; then
-                        print_pass
-                        echo "    → Release image verified against signatures: $target_release_image"
-                        echo "    → Image digest: $image_digest"
-                        if [[ -n "$matching_key" ]]; then
-                            echo "    → Matching signature key: $matching_key"
-                        fi
-                    else
-                        # If verify fails, check if we found a digest match
-                        if [[ "$match_found" == "true" ]]; then
-                            print_pass
-                            echo "    → Signature key matches image digest: $matching_key"
-                            echo "    → Image digest: $image_digest"
-                            echo "    → Note: oc adm release verify failed, but digest match found"
-                        else
-                            print_fail "Release image verification failed - signatures may not match target image" true
-                            echo "    → Image: $target_release_image"
-                            echo "    → Image digest: $image_digest"
-                            echo "    → No matching signature key found for this digest"
-                            echo "    → Ensure release signatures for version $TARGET_VERSION are correctly applied"
-                            step_failed=true
-                        fi
-                    fi
+                # Verify signature-image match via digest comparison
+                if [[ "$match_found" == "true" ]]; then
+                    print_pass
+                    print_info_success "Signature key matches image digest: $matching_key"
+                    print_info "Image digest: $image_digest"
                 else
-                    # Fallback to digest matching if oc adm release verify not available
-                    if [[ "$match_found" == "true" ]]; then
-                        print_pass
-                        echo "    → Signature key matches image digest: $matching_key"
-                        echo "    → Image digest: $image_digest"
-                        echo "    → Note: Using digest matching (oc adm release verify not available)"
-                    else
-                        print_fail "Could not verify signature-image match via digest" true
-                        echo "    → Image: $target_release_image"
-                        echo "    → Image digest: $image_digest"
-                        echo "    → No matching signature key found for this digest"
-                        echo "    → Ensure release signatures for version $TARGET_VERSION are correctly applied"
-                        echo "    → Signature keys may use different format or signatures may not match"
-                        step_failed=true
-                    fi
+                    print_fail "Could not verify signature-image match via digest" true
+                    print_info_error "Image: $target_release_image"
+                    print_info_error "Image digest: $image_digest"
+                    print_info_error "No matching signature key found for this digest"
+                    print_info "Ensure release signatures for version $TARGET_VERSION are correctly applied"
+                    print_info "Signature keys may use different format or signatures may not match"
+                    step_failed=true
                 fi
             fi
         fi
@@ -672,7 +663,7 @@ validate_registry_access() {
     print_check "Registry CA ConfigMap exists"
     if [[ -n "$registry_cm_name" ]] && check_resource_exists "configmap" "$registry_cm_name" "openshift-config"; then
         print_pass
-        echo "    → ConfigMap: $registry_cm_name"
+        print_info_success "ConfigMap: $registry_cm_name"
     else
         print_fail "Registry CA ConfigMap not found in 'openshift-config' namespace" true
         step_failed=true
@@ -685,7 +676,7 @@ validate_registry_access() {
         image_cm_ref=$(get_jsonpath "image.config.openshift.io" "cluster" "{.spec.additionalTrustedCA.name}")
         if [[ "$image_cm_ref" == "$registry_cm_name" ]]; then
             print_pass
-            echo "    → Image config references: $registry_cm_name"
+            print_info_success "Image config references: $registry_cm_name"
         else
             print_fail "Image config references '$image_cm_ref' but expected '$registry_cm_name'" true
             step_failed=true
@@ -711,7 +702,7 @@ validate_registry_access() {
             done
             if [[ "$has_cert" == "true" ]]; then
                 print_pass
-                echo "    → ConfigMap contains $cert_count certificate key(s)"
+                print_info_success "ConfigMap contains $cert_count certificate key(s)"
             else
                 print_fail "ConfigMap exists but does not contain valid certificate data" true
                 step_failed=true
@@ -754,7 +745,7 @@ validate_target_release_in_registry() {
     
     if [[ "$idms_list" == "{}" ]] || [[ -z "$idms_list" ]]; then
         print_fail "No ImageDigestMirrorSet resources found" true
-        echo "    → IDMS configuration is required for disconnected registry access"
+        print_info "IDMS configuration is required for disconnected registry access"
         step_failed=true
     else
         # Search for IDMS with source matching quay.io/openshift-release-dev/ocp-release
@@ -763,11 +754,11 @@ validate_target_release_in_registry() {
         
         if [[ -z "$matching_idms" ]]; then
             print_fail "No IDMS found mapping quay.io/openshift-release-dev/ocp-release to private registry" true
-            echo "    → Create an ImageDigestMirrorSet with source: quay.io/openshift-release-dev/ocp-release"
+            print_info "Create an ImageDigestMirrorSet with source: quay.io/openshift-release-dev/ocp-release"
             step_failed=true
         else
             print_pass
-            echo "    → Found IDMS: $matching_idms"
+            print_info_success "Found IDMS: $matching_idms"
             
             # Step 2: Extract mirror registry path(s)
             print_check "Mirror registry path extracted from IDMS"
@@ -780,7 +771,7 @@ validate_target_release_in_registry() {
                 step_failed=true
             else
                 print_pass
-                echo "    → Mirror registry: $mirror_registry"
+                print_info_success "Mirror registry: $mirror_registry"
                 
                 # Step 3: Verify target release image exists in private registry
                 print_check "Target release image exists in private registry"
@@ -790,18 +781,18 @@ validate_target_release_in_registry() {
                 
                 if oc image info "$target_image" &>/dev/null; then
                     print_pass
-                    echo "    → Target release image found: $target_image"
+                    print_info_success "Target release image found: $target_image"
                     
                     # Try to get additional info about the image
                     image_digest=$(oc image info "$target_image" --output jsonpath='{.digest}' 2>/dev/null || echo "")
                     if [[ -n "$image_digest" ]]; then
-                        echo "    → Image digest: $image_digest"
+                        print_info "Image digest: $image_digest"
                     fi
                 else
                     print_fail "Target release image not found in private registry" true
-                    echo "    → Expected image: $target_image"
-                    echo "    → Verify the image was mirrored using oc-mirror"
-                    echo "    → Check registry access and authentication"
+                    print_info_error "Expected image: $target_image"
+                    print_info "Verify the image was mirrored using oc-mirror"
+                    print_info "Check registry access and authentication"
                     step_failed=true
                 fi
             fi
@@ -939,7 +930,7 @@ validate_osus_application() {
             ready_pods=$(echo "$ready_pods" | tr -d '\n\r')
             if [[ "$ready_pods" -gt 0 ]]; then
                 print_pass
-                echo "    → Found $ready_pods ready pod(s) out of $pod_count total"
+                print_info_success "Found $ready_pods ready pod(s) out of $pod_count total"
             else
                 print_fail "OSUS pods exist but not all are ready" true
                 step_failed=true
@@ -960,10 +951,10 @@ validate_osus_application() {
     route_count=$(echo "$route_count" | tr -d '\n\r')
     if [[ "$route_count" -gt 0 ]]; then
         print_pass
-        echo "    → Found $route_count route(s)"
+        print_info_success "Found $route_count route(s)"
     else
         print_fail "No routes found in namespace '$OSUS_NAMESPACE'" true
-        echo "    → OSUS may be using NodePort/LoadBalancer, but route is expected for CVO access"
+        print_info "OSUS may be using NodePort/LoadBalancer, but route is expected for CVO access"
         step_failed=true
     fi
     
@@ -973,7 +964,7 @@ validate_osus_application() {
         policy_engine_uri=$(get_jsonpath "updateservice" "$OSUS_APP_NAME" "{.status.policyEngineURI}" "$OSUS_NAMESPACE")
         if [[ -n "$policy_engine_uri" ]] && [[ "$policy_engine_uri" != "null" ]]; then
             print_pass
-            echo "    → Policy Engine URI: $policy_engine_uri"
+            print_info_success "Policy Engine URI: $policy_engine_uri"
         else
             print_fail "UpdateService does not have a valid policyEngineURI in status" true
             step_failed=true
@@ -1004,7 +995,7 @@ validate_cvo_configuration() {
     if [[ -n "$cvo_upstream" ]] && [[ "$cvo_upstream" != "null" ]]; then
         if [[ "$cvo_upstream" != *"api.openshift.com"* ]]; then
             print_pass
-            echo "    → Upstream: $cvo_upstream"
+            print_info_success "Upstream: $cvo_upstream"
         else
             print_fail "CVO upstream still points to api.openshift.com: $cvo_upstream" true
             step_failed=true
@@ -1027,14 +1018,14 @@ validate_cvo_configuration() {
                 print_pass
             else
                 print_fail "CVO upstream does not match OSUS policy engine URI" true
-                echo "    → CVO: $cvo_upstream"
-                echo "    → OSUS: $policy_engine_uri"
-                echo "    → CVO must be configured to use the OSUS policy engine URI"
+                print_info_error "CVO: $cvo_upstream"
+                print_info_error "OSUS: $policy_engine_uri"
+                print_info "CVO must be configured to use the OSUS policy engine URI"
                 step_failed=true
             fi
         else
             print_fail "Cannot verify match - OSUS policyEngineURI not available" true
-            echo "    → OSUS UpdateService status.policyEngineURI is required for verification"
+            print_info "OSUS UpdateService status.policyEngineURI is required for verification"
             step_failed=true
         fi
     else
@@ -1053,7 +1044,7 @@ validate_cvo_configuration() {
         running_cvo_pods=$(echo "$running_cvo_pods" | tr -d '\n\r')
         if [[ "$running_cvo_pods" -gt 0 ]]; then
             print_pass
-            echo "    → Found $running_cvo_pods running CVO pod(s)"
+            print_info_success "Found $running_cvo_pods running CVO pod(s)"
         else
             print_fail "CVO pods exist but not all are Running" true
             step_failed=true
@@ -1072,7 +1063,7 @@ validate_cvo_configuration() {
         available_updates=$(echo "$available_updates" | tr -d '\n\r')
         if [[ "$available_updates" -gt 0 ]]; then
             print_pass
-            echo "    → Target version $TARGET_VERSION is available"
+            print_info_success "Target version $TARGET_VERSION is available"
         else
             # Check if any updates are available at all
             debug_cmd "oc adm upgrade | grep -E '^[0-9]+\\.[0-9]+\\.[0-9]+' | wc -l"
@@ -1080,8 +1071,8 @@ validate_cvo_configuration() {
             update_count=$(echo "$update_count" | tr -d '\n\r')
             if [[ "$update_count" -gt 0 ]]; then
                 print_fail "Updates available but target version $TARGET_VERSION not found in list" true
-                echo "    → Target version $TARGET_VERSION is not available for upgrade"
-                echo "    → Verify the target version was mirrored and is accessible"
+                print_info_error "Target version $TARGET_VERSION is not available for upgrade"
+                print_info "Verify the target version was mirrored and is accessible"
                 step_failed=true
             else
                 print_fail "CVO cannot retrieve available updates" true
@@ -1118,7 +1109,7 @@ validate_cluster_health() {
     ready_nodes=$(echo "$ready_nodes" | tr -d '\n\r')
     if [[ "$total_nodes" -gt 0 ]] && [[ "$ready_nodes" == "$total_nodes" ]]; then
         print_pass
-        echo "    → $ready_nodes/$total_nodes nodes Ready"
+        print_info_success "$ready_nodes/$total_nodes nodes Ready"
     else
         print_fail "$ready_nodes/$total_nodes nodes Ready (expected all $total_nodes)" true
         step_failed=true
@@ -1132,8 +1123,8 @@ validate_cluster_health() {
     if [[ "$degraded_operators" -eq 0 ]]; then
         print_pass
     else
-        print_fail "$degraded_operators operator(s) are degraded" true
-        echo "    → Run 'oc get clusteroperators' to see details"
+            print_fail "$degraded_operators operator(s) are degraded" true
+            print_info "Run 'oc get clusteroperators' to see details"
         step_failed=true
     fi
     
@@ -1145,8 +1136,8 @@ validate_cluster_health() {
     if [[ "$blocking_conditions" -eq 0 ]]; then
         print_pass
     else
-        print_fail "$blocking_conditions blocking condition(s) found in cluster version status" true
-        echo "    → Run 'oc get clusterversion version -o yaml' to see details"
+            print_fail "$blocking_conditions blocking condition(s) found in cluster version status" true
+            print_info "Run 'oc get clusterversion version -o yaml' to see details"
         step_failed=true
     fi
     
@@ -1157,11 +1148,11 @@ validate_cluster_health() {
         debug_cmd "oc adm upgrade | grep -q $TARGET_VERSION"
         if oc adm upgrade 2>/dev/null | grep -q "$TARGET_VERSION"; then
             print_pass
-            echo "    → Version $TARGET_VERSION is available for upgrade"
+            print_info_success "Version $TARGET_VERSION is available for upgrade"
         else
             print_fail "Target version $TARGET_VERSION not found in available upgrades" true
-            echo "    → Run 'oc adm upgrade' to see available versions"
-            echo "    → Verify the target version was mirrored and OSUS is configured correctly"
+            print_info "Run 'oc adm upgrade' to see available versions"
+            print_info "Verify the target version was mirrored and OSUS is configured correctly"
             step_failed=true
         fi
     else
@@ -1178,14 +1169,14 @@ validate_cluster_health() {
         print_pass
     else
         print_fail "Some pods are not running" true
-        echo "    → Non-running pods (excluding Completed/Succeeded):"
+        print_info_error "Non-running pods (excluding Completed/Succeeded):"
         echo "$not_running_pods" | while IFS= read -r line; do
             if [[ -n "$line" ]]; then
                 namespace=$(echo "$line" | awk '{print $1}')
                 pod_name=$(echo "$line" | awk '{print $2}')
                 status=$(echo "$line" | awk '{print $4}')
                 restarts=$(echo "$line" | awk '{print $5}')
-                echo "      $namespace/$pod_name: Status=$status, Restarts=$restarts"
+                echo "        - $namespace/$pod_name: Status=$status, Restarts=$restarts"
             fi
         done
         step_failed=true
@@ -1200,13 +1191,13 @@ validate_cluster_health() {
         print_pass
     else
         print_fail "Some PVCs are not bound" true
-        echo "    → Non-bound PVCs:"
+        print_info_error "Non-bound PVCs:"
         echo "$not_bound_pvcs" | while IFS= read -r line; do
             if [[ -n "$line" ]]; then
                 namespace=$(echo "$line" | awk '{print $1}')
                 pvc_name=$(echo "$line" | awk '{print $2}')
                 status=$(echo "$line" | awk '{print $3}')
-                echo "      $namespace/$pvc_name: $status"
+                echo "        - $namespace/$pvc_name: $status"
             fi
         done
         step_failed=true
@@ -1222,7 +1213,7 @@ validate_cluster_health() {
         print_pass
     else
         print_fail "Some MachineConfigPools are not ready" true
-        echo "    → Problematic MachineConfigPools:"
+        print_info_error "Problematic MachineConfigPools:"
         echo "$mcp_problematic" | while IFS= read -r line; do
             if [[ -n "$line" ]]; then
                 mcp_name=$(echo "$line" | awk '{print $1}')
@@ -1233,7 +1224,7 @@ validate_cluster_health() {
                 [[ "$updated" != "True" ]] && issues="${issues}Not Updated "
                 [[ "$updating" == "True" ]] && issues="${issues}Updating "
                 [[ "$degraded" == "True" ]] && issues="${issues}Degraded "
-                echo "      $mcp_name: ${issues}"
+                echo "        - $mcp_name: ${issues}"
             fi
         done
         step_failed=true
